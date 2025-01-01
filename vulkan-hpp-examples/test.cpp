@@ -20,7 +20,7 @@
 
 #include <polymorph/polymorph.hpp>
 
-#include "PhysicalDeviceScore.hpp"
+#include "../VulkanUtils/PhysicalDeviceScore.hpp"
 
 constexpr uint64_t fenceTimeout = 100000000;
 
@@ -263,6 +263,35 @@ find_memory_type(const vk::PhysicalDeviceMemoryProperties& memoryProperties,
 		return {};
 	return typeIndex;
 }
+
+
+template <typename T>
+void copy_to_device(const vk::raii::DeviceMemory& deviceMemory,
+					const T* pData,
+					const size_t count,
+					const vk::DeviceSize stride = sizeof(T))
+{
+	assert(sizeof(T) <= stride);
+	uint8_t* deviceData = static_cast<uint8_t*>(deviceMemory.mapMemory(0, count * stride));
+	if (stride == sizeof(T)) {
+		memcpy(deviceData, pData, count * sizeof(T));
+	}
+	else {
+		for (size_t i = 0; i < count; i++) {
+			memcpy( deviceData, &pData[i], sizeof( T ) );
+			deviceData += stride;
+		}
+	}
+	deviceMemory.unmapMemory();
+}
+
+template <typename T>
+void copy_to_device(const vk::raii::DeviceMemory& deviceMemory, const T& data)
+{
+  copy_to_device<T>(deviceMemory, &data, 1);
+}
+
+
 
 typedef VkBool32 (VKAPI_PTR *PFN_vkDebugUtilsMessengerCallbackEXT)(
     VkDebugUtilsMessageSeverityFlagBitsEXT           messageSeverity,
@@ -648,6 +677,8 @@ int main()
       // If the surface size is defined, the swap chain size must match
       swapchain_extent = surface_capabilities.currentExtent;
     }
+	
+
 	std::cout << "> SwapChain Extent width:  " << swapchain_extent.width
 			  << "\n"
 			  << "                   height: " << swapchain_extent.height
@@ -713,7 +744,8 @@ int main()
 		.setImageColorSpace(vk::ColorSpaceKHR::eSrgbNonlinear)
 		.setImageExtent(swapchain_extent)
 		.setQueueFamilyIndices(queueFamilyIndices)
-		.setImageUsage(vk::ImageUsageFlagBits::eColorAttachment)
+		.setImageUsage(vk::ImageUsageFlagBits::eColorAttachment 
+					   | vk::ImageUsageFlagBits::eTransferSrc)
 		.setImageSharingMode(vk::SharingMode::eExclusive)
 		.setPreTransform(preTransform)
 		.setCompositeAlpha(compositeAlpha)
@@ -817,34 +849,23 @@ int main()
 	/** ************************************************************************
 	 * Determine the memory requirements of the depth image
 	 */
-    vk::PhysicalDeviceMemoryProperties memoryProperties = physical_device.getMemoryProperties();
 	auto memoryRequirements = depth_image.getMemoryRequirements();
+    auto depth_typeindex =
+		find_memory_type(physical_device.getMemoryProperties(),
+						 memoryRequirements.memoryTypeBits,
+						 vk::MemoryPropertyFlagBits::eDeviceLocal);
 
-    uint32_t typeBits = memoryRequirements.memoryTypeBits;
-    uint32_t typeIndex = uint32_t(~0);
-    for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; i++) {
-      if ((typeBits & 1) 
-		  && ((memoryProperties.memoryTypes[i].propertyFlags 
-			   & vk::MemoryPropertyFlagBits::eDeviceLocal ) == vk::MemoryPropertyFlagBits::eDeviceLocal ) )
-      {
-        typeIndex = i;
-        break;
-      }
-      typeBits >>= 1;
-    }
-	
-	std::cout << "Type Index: " << typeIndex << std::endl;
-    assert( typeIndex != uint32_t( ~0 ) );
+	std::cout << "> Depth Buffer Type Index: " << *depth_typeindex << std::endl;
 
 	/** ************************************************************************
 	 * Setup the Image Memory and View
 	 */
-	std::cout << "Depth Image Allocation Size: " << memoryRequirements.size << std::endl;
+	std::cout << "> Depth Image Allocation Size: " << memoryRequirements.size << std::endl;
 
 	vk::MemoryAllocateInfo depth_allocate_info_memory{};
 	depth_allocate_info_memory
 		.setAllocationSize(memoryRequirements.size)
-		.setMemoryTypeIndex(typeIndex);
+		.setMemoryTypeIndex(*depth_typeindex);
     vk::raii::DeviceMemory depth_memory = device.allocateMemory(depth_allocate_info_memory);
     depth_image.bindMemory(depth_memory, 0);
 
@@ -908,18 +929,10 @@ int main()
 		.setMemoryTypeIndex(*uniform_type_index);
     vk::raii::DeviceMemory uniformDataMemory(device, uniform_memory_allocate_info);
 
-	std::cout << "Uniform Buffer Allocation Size: " << uniformMemoryRequirements.size 
+	std::cout << "> Uniform Buffer Allocation Size: " << uniformMemoryRequirements.size 
 			  << std::endl;
 
-	/** ************************************************************************
-	 * Load Camera Matrix to Uniform Buffer Data
-	 */
-    uint8_t* pData =
-		static_cast<uint8_t*>(uniformDataMemory.mapMemory(0, uniformMemoryRequirements.size));
-    memcpy(pData, &mvpc, sizeof(mvpc));
-    uniformDataMemory.unmapMemory();
-    uniformDataBuffer.bindMemory(uniformDataMemory, 0);
-	
+	copy_to_device(uniformDataMemory, mvpc);
 
 	/** ************************************************************************
 	 * Create DescriptorSets and Pipeline
@@ -1083,7 +1096,6 @@ int main()
 	/** ************************************************************************
 	 * Create Vertex Buffer
 	 */
-	
     // NOTE: in order to get a clean desctruction sequence, instantiate
 	// the DeviceMemory for the vertex buffer first
     vk::raii::DeviceMemory vertexDeviceMemory(nullptr);
@@ -1114,15 +1126,35 @@ int main()
 		.setMemoryTypeIndex(*vertexMemoryTypeIndex);
     vertexDeviceMemory = vk::raii::DeviceMemory(device, vertexMemoryAllocateInfo);
 	
+#if 0
+    vk::MemoryAllocateInfo vertexMemoryAllocateInfo{};
+	vertexMemoryAllocateInfo
+		.setAllocationSize(vertexMemoryRequirements.size)
+		.setMemoryTypeIndex(*vertexMemoryTypeIndex);
+    vertexDeviceMemory = vk::raii::DeviceMemory(device, vertexMemoryAllocateInfo);
+	
+	copy_to_device(vertexDeviceMemory,
+				   coloredCubeData.data(),
+				   sizeof(coloredCubeData[0]) * coloredCubeData.size());
+#endif
+	
     // copy the vertex and color data into that device memory
     uint8_t* vertexDataPtr =
 		static_cast<uint8_t*>(vertexDeviceMemory.mapMemory(0, vertexMemoryRequirements.size));
 
-    std::memcpy(vertexDataPtr, coloredCubeData.data(), sizeof(coloredCubeData));
+    std::memcpy(vertexDataPtr,
+				coloredCubeData.data(),
+				sizeof(coloredCubeData[0]) * coloredCubeData.size());
     vertexDeviceMemory.unmapMemory();
 
     // and bind the device memory to the vertex buffer
     vertexBuffer.bindMemory(vertexDeviceMemory, 0);
+	
+	std::cout << "> vertex buffer size: " << vertexMemoryRequirements.size << std::endl
+			  << "> vertex size: " << sizeof(coloredCubeData[0]) << std::endl
+			  << "> vertex count: " << coloredCubeData.size() << std::endl
+			  << "> vertex memory combined needed: " 
+			  << sizeof(coloredCubeData[0]) * coloredCubeData.size() << std::endl;
 	
 	/** ************************************************************************
 	 * Create Shader Pipeline
@@ -1165,15 +1197,33 @@ int main()
     vk::PipelineInputAssemblyStateCreateInfo pipelineInputAssemblyStateCreateInfo{};
 	pipelineInputAssemblyStateCreateInfo
 		.setFlags(vk::PipelineInputAssemblyStateCreateFlags())
+		.setPrimitiveRestartEnable(vk::False)
 		.setTopology(vk::PrimitiveTopology::eTriangleList);
+	
+	vk::Viewport default_viewport{};
+	default_viewport
+		.setX(0.0f)
+		.setY(0.0f)
+		.setWidth(static_cast<float>(window_extent.width))
+		.setHeight(static_cast<float>(window_extent.height))
+		.setMinDepth(0.0f)
+		.setMaxDepth(1.0f);
+	
+	std::cout << "> pipeline wiewport width:  " << default_viewport.width << std::endl
+			  << "> pipeline wiewport height: " << default_viewport.height << std::endl;
+	
+	vk::Rect2D default_scissor{};
+	default_scissor.offset
+		.setX(0)
+		.setY(0);
 	
     vk::PipelineViewportStateCreateInfo pipelineViewportStateCreateInfo{};
 	pipelineViewportStateCreateInfo
 		.setFlags(vk::PipelineViewportStateCreateFlags())
 		.setViewportCount(1)
-		.setViewports(nullptr)
+		.setViewports(default_viewport)
 		.setScissorCount(1)
-		.setScissors(nullptr);
+		.setScissors(default_scissor);
 	
     vk::PipelineRasterizationStateCreateInfo pipelineRasterizationStateCreateInfo{};
 	pipelineRasterizationStateCreateInfo
@@ -1192,6 +1242,7 @@ int main()
     vk::PipelineMultisampleStateCreateInfo pipelineMultisampleStateCreateInfo{};
 	pipelineMultisampleStateCreateInfo
 		.setFlags(vk::PipelineMultisampleStateCreateFlags())
+		.setSampleShadingEnable(false)
 		.setRasterizationSamples(vk::SampleCountFlagBits::e1);
 
     vk::StencilOpState stencilOpState{};
@@ -1225,6 +1276,7 @@ int main()
 		.setColorBlendOp(vk::BlendOp::eAdd)
 		.setSrcAlphaBlendFactor(vk::BlendFactor::eZero)
 		.setDstAlphaBlendFactor(vk::BlendFactor::eZero)
+		.setAlphaBlendOp(vk::BlendOp::eAdd)
 		.setColorWriteMask(colorComponentFlags);
 		
 	vk::PipelineColorBlendStateCreateInfo pipelineColorBlendStateCreateInfo{};
@@ -1276,7 +1328,7 @@ int main()
 	 */
 	vk::raii::Queue graphicsQueue(device, *graphics_present_index, 0);
 	vk::raii::Queue presentQueue(device, *graphics_present_index, 0);
-
+	vk::raii::Semaphore imageAcquiredSemaphore(device, vk::SemaphoreCreateInfo());
 
 	/** ************************************************************************
 	 * Frame Loop
@@ -1322,7 +1374,6 @@ int main()
 		/** ************************************************************************
 		 * Get Next Presentation Image Index
 		 */
-		vk::raii::Semaphore imageAcquiredSemaphore(device, vk::SemaphoreCreateInfo());
 		
 		auto [result, imageIndex] = swapChain.acquireNextImage(fenceTimeout,
 															   imageAcquiredSemaphore);
@@ -1335,13 +1386,13 @@ int main()
 		/** ************************************************************************
 		 * Setup Drawing & Cleaing Information
 		 */
-		std::array<vk::ClearValue, 2> clearValues;
-		clearValues[0].color = vk::ClearColorValue(1.0f, 0.2f, 0.2f, 1.0f);
-		
 		vk::ClearDepthStencilValue cleardepth_value{};
 		cleardepth_value
 			.setDepth(1.0f)
 			.setStencil(0);
+
+		std::array<vk::ClearValue, 2> clearValues;
+		clearValues[0].color = vk::ClearColorValue(1.0f, 0.2f, 0.2f, 1.0f);
 		clearValues[1].depthStencil = cleardepth_value;
 		
 		vk::Offset2D render_offset{};
