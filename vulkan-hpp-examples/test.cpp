@@ -376,16 +376,9 @@ vk::DebugUtilsMessengerCreateInfoEXT makeDebugUtilsMessengerCreateInfoEXT()
 		.setMessageType(vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral 
 						| vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance 
 						| vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation)
-		.setPfnUserCallback(&debugUtilsMessengerCallback)
-		;
+		.setPfnUserCallback(&debugUtilsMessengerCallback);
 
 	return debugMessenger;
-// return { {},
-//          vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning 
-//	   | vk::DebugUtilsMessageSeverityFlagBitsEXT::eError,
-//          vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral | vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance |
-//            vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation,
-//          &vk::su::debugUtilsMessengerCallback };
 }
 
 
@@ -460,7 +453,9 @@ int main()
 										  50,
 										  0 | SDL_WINDOW_VULKAN);
 	
-	const auto sdl_extensions = get_sdl2_instance_extensions(window);
+	std::vector<const char*> instance_extensions = get_sdl2_instance_extensions(window);
+	instance_extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+
     vk::raii::Context context;
 	vk::ApplicationInfo applicationInfo{};
 	applicationInfo
@@ -471,10 +466,11 @@ int main()
 		.setApiVersion(VK_API_VERSION_1_1);
 
 	vk::InstanceCreateInfo instanceCreateInfo{};
-	instanceCreateInfo.setPEnabledExtensionNames(sdl_extensions);
+	instanceCreateInfo.setPEnabledExtensionNames(instance_extensions);
     vk::raii::Instance instance(context, instanceCreateInfo);
 
-    //vk::raii::DebugUtilsMessengerEXT debugUtilsMessenger(instance, vk::su::makeDebugUtilsMessengerCreateInfoEXT());
+	vk::raii::DebugUtilsMessengerEXT debugUtilsMessenger(instance,
+														 makeDebugUtilsMessengerCreateInfoEXT());
 
 	VkSurfaceKHR raw_surface;
     SDL_Vulkan_CreateSurface(window, *instance, &raw_surface);
@@ -483,11 +479,6 @@ int main()
 	
 	const std::vector<const char*> device_extensions = {
 		VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-//#if defined(__WIN32)
-		//VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
-//#else
-		//VK_KHR_SURFACE_EXTENSION_NAME,
-//#endif
 	};
 	
 	using DeviceAndScore = std::tuple<vk::raii::PhysicalDevice, PhysicalDeviceScore::Score>;

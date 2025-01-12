@@ -109,10 +109,6 @@ target_link_libraries(
   vulkan
   INTERFACE
   Vulkan::Headers
-
-  glslang::glslang
-  glslang::glslang-default-resource-limits
-  glslang::SPIRV
-  
+ 
   #SDL2::SDL2-static
 )
