@@ -59,6 +59,8 @@ private:
 	void RecordCommandbuffer(vk::CommandBuffer& commandbuffer,
 							 const uint32_t index);
 
+	const int maxFramesInFlight_ = 2;
+
 	SDL_Window* window_;
 	vk::UniqueInstance instance_;
 	//TODO: I cannot seem to load the function pointers for debugutils messenger..
