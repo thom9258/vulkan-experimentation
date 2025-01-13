@@ -60,6 +60,7 @@ private:
 							 const uint32_t index);
 
 	const int maxFramesInFlight_ = 2;
+	uint32_t current_frame_{0};
 
 	SDL_Window* window_;
 	vk::UniqueInstance instance_;
@@ -83,13 +84,13 @@ private:
 	
 	std::vector<vk::UniqueFramebuffer> framebuffers_;
 	vk::UniqueCommandPool commandpool_;
-	vk::UniqueCommandBuffer commandbuffer_;
+	std::vector<vk::UniqueCommandBuffer> commandbuffers_;
 	
-	vk::UniqueSemaphore imageAvailableSemaphore;
-	vk::UniqueSemaphore renderFinishedSemaphore;
-	vk::UniqueFence inFlightFence;
-
+	std::vector<vk::UniqueSemaphore> imageAvailableSemaphores_;
+	std::vector<vk::UniqueSemaphore> renderFinishedSemaphores_;
+	std::vector<vk::UniqueFence> inFlightFences_;
 };
+
 
 VulkanRenderer::~VulkanRenderer()
 {
@@ -243,9 +244,7 @@ void VulkanRenderer::GetQueueFamilyIndices()
 
 void VulkanRenderer::CreateDevice()
 {
-	float queuePriority = 0.0f;
-	
-	
+	float queuePriority = 1.0f;
 	uint32_t device_index = present_index(graphics_present_indices_);
 
 	auto deviceQueueCreateInfo = vk::DeviceQueueCreateInfo{}
@@ -380,7 +379,7 @@ void VulkanRenderer::CreateSwapChain()
 		//| vk::ImageUsageFlagBits::eTransferSrc)
 		.setClipped(true)
 		.setPreTransform(preTransform)
-		.setCompositeAlpha(compositeAlpha)
+		.setCompositeAlpha(vk::CompositeAlphaFlagBitsKHR::eOpaque)
 		.setPresentMode(swapchainPresentMode);
 	
 	std::array<uint32_t, 2> splitIndices = {
@@ -689,12 +688,10 @@ void VulkanRenderer::CreateCommandbuffers()
 	commandBufferAllocateInfo
 		.setCommandPool(*commandpool_)
 		.setLevel(vk::CommandBufferLevel::ePrimary)
-		.setCommandBufferCount(1);
+		.setCommandBufferCount(maxFramesInFlight_);
 
-	std::vector<vk::UniqueCommandBuffer> commandbuffers = device_->allocateCommandBuffersUnique(commandBufferAllocateInfo);
-	commandbuffer_ = std::move(commandbuffers.front());
-
-	std::cout << "> Created " << commandbuffers.size() << " Command buffers" << std::endl;
+	commandbuffers_ = device_->allocateCommandBuffersUnique(commandBufferAllocateInfo);
+	std::cout << "> Created " << commandbuffers_.size() << " Command buffers" << std::endl;
 }
 
 
@@ -755,16 +752,19 @@ void VulkanRenderer::RecordCommandbuffer(vk::CommandBuffer& commandbuffer,
 void VulkanRenderer::CreateSyncObjects()
 {
 	const auto semaphoreCreateInfo = vk::SemaphoreCreateInfo{};
-	imageAvailableSemaphore = device_->createSemaphoreUnique(semaphoreCreateInfo, nullptr);
-	renderFinishedSemaphore = device_->createSemaphoreUnique(semaphoreCreateInfo, nullptr);
-
 	const auto fenceCreateInfo = vk::FenceCreateInfo{}
 		.setFlags(vk::FenceCreateFlagBits::eSignaled);
 	// Signaled means that the fence is engaged at creation, this
 	// simplifies the first time we want to wait for it to not need
 	// extra logic
 
-	inFlightFence = device_->createFenceUnique(fenceCreateInfo, nullptr);
+	for (int i = 0; i < maxFramesInFlight_; i++) {
+		imageAvailableSemaphores_.push_back(device_->createSemaphoreUnique(semaphoreCreateInfo,
+																		   nullptr));
+		renderFinishedSemaphores_.push_back(device_->createSemaphoreUnique(semaphoreCreateInfo,
+																		   nullptr));
+		inFlightFences_.push_back(device_->createFenceUnique(fenceCreateInfo, nullptr));
+	}
 
 	std::cout << "> Created Sync Objects" << std::endl;
 }
@@ -772,30 +772,35 @@ void VulkanRenderer::CreateSyncObjects()
 void VulkanRenderer::DrawFrame()
 {
 	const auto maxTimeout = std::numeric_limits<unsigned int>::max();
-	auto waitresult = device_->waitForFences(*inFlightFence,
+	auto waitresult = device_->waitForFences(*(inFlightFences_[current_frame_]),
 										 true,
 										 maxTimeout);
-	device_->resetFences(*inFlightFence);
+	device_->resetFences(*(inFlightFences_[current_frame_]));
 
 	if (waitresult != vk::Result::eSuccess)
 		throw std::runtime_error("Could not wait for inFlightFence");
 	
-	auto [result, imageIndex] = device_->acquireNextImageKHR(*swapchain_,
-															 maxTimeout,
-															 *imageAvailableSemaphore);
+	auto [result, imageIndex] =
+		device_->acquireNextImageKHR(*swapchain_,
+									 maxTimeout,
+									 *(imageAvailableSemaphores_[current_frame_]));
+
 	assert(result == vk::Result::eSuccess);
 	assert(imageIndex < swapchain_imageviews_.size());
 	const std::string line = ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>";
-	std::cout << line << "\n > FRAME: " << imageIndex << "\n" << line << std::endl;
+	std::cout << line 
+			  << "\n > FRAME: " << imageIndex  
+			  << "\n > INDEX: " << current_frame_ 
+			  << "\n" << line << std::endl;
 	
-	commandbuffer_->reset(vk::CommandBufferResetFlags());
-	RecordCommandbuffer(*commandbuffer_, imageIndex);
+	commandbuffers_[current_frame_]->reset(vk::CommandBufferResetFlags());
+	RecordCommandbuffer(*(commandbuffers_[current_frame_]), imageIndex);
 
 	const std::vector<vk::Semaphore> waitSemaphores{
-		*imageAvailableSemaphore,
+		*(imageAvailableSemaphores_[current_frame_]),
 	};
 	const std::vector<vk::Semaphore> signalSemaphores{
-		*renderFinishedSemaphore,
+		*(renderFinishedSemaphores_[current_frame_]),
 	};
 	
 	const std::vector<vk::PipelineStageFlags> waitStages{
@@ -805,19 +810,19 @@ void VulkanRenderer::DrawFrame()
 	auto submitInfo = vk::SubmitInfo{}
 		.setWaitSemaphores(waitSemaphores)
 		.setWaitDstStageMask(waitStages)
-		.setCommandBuffers(*commandbuffer_)
+		.setCommandBuffers(*(commandbuffers_[current_frame_]))
 		.setSignalSemaphores(signalSemaphores);
 	
-	graphics_queue(index_queues_).submit(submitInfo, *inFlightFence);
+	graphics_queue(index_queues_).submit(submitInfo, *(inFlightFences_[current_frame_]));
 	std::cout << "> submitted graphics command buffer" << std::endl;
 
 
 	const std::vector<vk::SwapchainKHR> swapchains = {*swapchain_};
 	const std::vector<uint32_t> imageIndices = {imageIndex};
 	auto presentInfo = vk::PresentInfoKHR{}
-		.setWaitSemaphores(signalSemaphores)
-		.setImageIndices(imageIndices)
 		.setSwapchains(swapchains)
+		.setImageIndices(imageIndices)
+		.setWaitSemaphores(signalSemaphores)
 		.setResults(nullptr);
 	
 	std::cout << "Present Info:\n" 
@@ -829,4 +834,5 @@ void VulkanRenderer::DrawFrame()
 	if (presentResult != vk::Result::eSuccess)
 		throw std::runtime_error("Could not wait for inFlightFence");
 
+    current_frame_ = (current_frame_ + 1) % maxFramesInFlight_;
 }
