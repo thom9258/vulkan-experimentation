@@ -61,6 +61,7 @@ private:
 
 	const int maxFramesInFlight_ = 2;
 	uint32_t current_frame_{0};
+	uint32_t total_frames_{0};
 
 	SDL_Window* window_;
 	vk::UniqueInstance instance_;
@@ -94,6 +95,8 @@ private:
 
 VulkanRenderer::~VulkanRenderer()
 {
+	device_->waitIdle();
+
 	// TODO: Port over the ResourceWrapperRuntime so we can automatically destroy all this stuff..
 	// Note we need to destroy the swapchain manually so it happens before the surface...
 	swapchain_.reset();
@@ -379,7 +382,8 @@ void VulkanRenderer::CreateSwapChain()
 		//| vk::ImageUsageFlagBits::eTransferSrc)
 		.setClipped(true)
 		.setPreTransform(preTransform)
-		.setCompositeAlpha(vk::CompositeAlphaFlagBitsKHR::eOpaque)
+		.setCompositeAlpha(compositeAlpha)
+		//.setCompositeAlpha(vk::CompositeAlphaFlagBitsKHR::eOpaque)
 		.setPresentMode(swapchainPresentMode);
 	
 	std::array<uint32_t, 2> splitIndices = {
@@ -789,9 +793,10 @@ void VulkanRenderer::DrawFrame()
 	assert(imageIndex < swapchain_imageviews_.size());
 	const std::string line = ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>";
 	std::cout << line 
-			  << "\n > FRAME: " << imageIndex  
-			  << "\n > INDEX: " << current_frame_ 
-			  << "\n" << line << std::endl;
+			  << "\n > index:         " << imageIndex  
+			  << "\n > current frame: " << current_frame_ 
+			  << "\n > total frames:  " << total_frames_ 
+			  << std::endl;
 	
 	commandbuffers_[current_frame_]->reset(vk::CommandBufferResetFlags());
 	RecordCommandbuffer(*(commandbuffers_[current_frame_]), imageIndex);
@@ -814,25 +819,18 @@ void VulkanRenderer::DrawFrame()
 		.setSignalSemaphores(signalSemaphores);
 	
 	graphics_queue(index_queues_).submit(submitInfo, *(inFlightFences_[current_frame_]));
-	std::cout << "> submitted graphics command buffer" << std::endl;
-
 
 	const std::vector<vk::SwapchainKHR> swapchains = {*swapchain_};
 	const std::vector<uint32_t> imageIndices = {imageIndex};
 	auto presentInfo = vk::PresentInfoKHR{}
 		.setSwapchains(swapchains)
 		.setImageIndices(imageIndices)
-		.setWaitSemaphores(signalSemaphores)
-		.setResults(nullptr);
+		.setWaitSemaphores(signalSemaphores);
 	
-	std::cout << "Present Info:\n" 
-			  << "    Given Swapchain Count: " << swapchains.size() << "\n"
-			  << "    Set Swapchain Count:   " << presentInfo.swapchainCount << "\n"
-			  << std::endl;
-
 	auto presentResult = present_queue(index_queues_).presentKHR(presentInfo);
 	if (presentResult != vk::Result::eSuccess)
 		throw std::runtime_error("Could not wait for inFlightFence");
 
     current_frame_ = (current_frame_ + 1) % maxFramesInFlight_;
+	total_frames_++;
 }
