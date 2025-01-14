@@ -559,10 +559,10 @@ void VulkanRenderer::CreateGraphicsPipeline()
 			  << std::endl;
 
 	
-	vk::Rect2D default_scissor{};
-	default_scissor.offset
-		.setX(0)
-		.setY(0);
+	auto default_scissor  = vk::Rect2D{}
+		.setOffset(vk::Offset2D{}.setX(0.0f)
+				                 .setY(0.0f));
+
 
 	std::cout << "> scissor x: " << default_scissor.offset.x << "\n"
 			  << "          y: " << default_scissor.offset.y << std::endl;
@@ -712,7 +712,7 @@ void VulkanRenderer::RecordCommandbuffer(vk::CommandBuffer& commandbuffer,
 				                 .setY(0.0f));
 	
 	const auto clearColor = vk::ClearValue{}
-		.setColor({0.0f, 0.0f, 0.0f, 1.0f});
+		.setColor({0.1f, 0.1f, 0.1f, 1.0f});
 	
 	const auto renderPassInfo = vk::RenderPassBeginInfo{}
 		.setRenderPass(*renderpass_)
@@ -738,8 +738,8 @@ void VulkanRenderer::RecordCommandbuffer(vk::CommandBuffer& commandbuffer,
 	const std::vector<vk::Rect2D> scissors{
 		vk::Rect2D{}
 		.setExtent(window_extent)
-		.offset.setX(0.0f)
-		       .setY(0.0f),
+		.setOffset(vk::Offset2D{}.setX(0.0f)
+				                 .setY(0.0f)),
 	};
 	const uint32_t scissor_start = 0;
 	commandbuffer.setScissor(scissor_start, scissors);
@@ -791,12 +791,12 @@ void VulkanRenderer::DrawFrame()
 
 	assert(result == vk::Result::eSuccess);
 	assert(imageIndex < swapchain_imageviews_.size());
-	const std::string line = ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>";
-	std::cout << line 
-			  << "\n > index:         " << imageIndex  
-			  << "\n > current frame: " << current_frame_ 
-			  << "\n > total frames:  " << total_frames_ 
-			  << std::endl;
+	//const std::string line = ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>";
+	//std::cout << line 
+	//<< "\n > index:         " << imageIndex  
+	//<< "\n > current frame: " << current_frame_ 
+	//<< "\n > total frames:  " << total_frames_ 
+	//<< std::endl;
 	
 	commandbuffers_[current_frame_]->reset(vk::CommandBufferResetFlags());
 	RecordCommandbuffer(*(commandbuffers_[current_frame_]), imageIndex);
