@@ -24,6 +24,7 @@
 #include "Utils.hpp"
 #include "DebugMessenger.hpp"
 
+#include "Texture.hpp"
 
 constexpr std::string resources_root = "../resources";
 
@@ -37,6 +38,10 @@ public:
 	vk::Extent2D WindowExtent() const noexcept;
 	void DrawFrame();
 
+	vk::Device& device();
+	vk::PhysicalDevice& physical_device();
+	vk::CommandPool& command_pool();
+	vk::Queue& graphics_queue();
 	
 private:
 	void CreateContext();
@@ -55,6 +60,7 @@ private:
 	void CreateCommandpool();
 	void CreateCommandbuffers();
 	void CreateSyncObjects();
+	void CreateDrawTextures();
 
 	void RecordCommandbuffer(vk::CommandBuffer& commandbuffer,
 							 const uint32_t index);
@@ -82,16 +88,41 @@ private:
 	vk::UniqueRenderPass renderpass_;
 	vk::UniquePipelineLayout pipelineLayout_;
     vk::Pipeline pipeline_;
+
+	Bitmap2D draw_image_;
+	std::vector<Texture> draw_textures_;
 	
 	std::vector<vk::UniqueFramebuffer> framebuffers_;
 	vk::UniqueCommandPool commandpool_;
 	std::vector<vk::UniqueCommandBuffer> commandbuffers_;
 	
+
 	std::vector<vk::UniqueSemaphore> imageAvailableSemaphores_;
 	std::vector<vk::UniqueSemaphore> renderFinishedSemaphores_;
 	std::vector<vk::UniqueFence> inFlightFences_;
 };
 
+
+vk::Device& VulkanRenderer::device()
+{
+	return device_.get();
+}
+
+vk::PhysicalDevice& VulkanRenderer::physical_device()
+{
+	return physical_device_;
+}
+
+
+vk::CommandPool& VulkanRenderer::command_pool()
+{
+	return commandpool_.get();
+}
+
+vk::Queue& VulkanRenderer::graphics_queue()
+{
+	return ::graphics_queue(index_queues_);
+}
 
 VulkanRenderer::~VulkanRenderer()
 {
@@ -125,6 +156,7 @@ VulkanRenderer::VulkanRenderer()
 	CreateCommandpool();
 	CreateCommandbuffers();
 	CreateSyncObjects();
+	CreateDrawTextures();
 }
 
 void VulkanRenderer::CreateContext()
@@ -675,6 +707,34 @@ void VulkanRenderer::CreateFramebuffers()
 	std::cout << "> Created Framebuffer Count: " << framebuffers_.size() << std::endl;
 }
 
+void VulkanRenderer::CreateDrawTextures()
+{
+	Texture texture;
+	auto optbitmap = load_bitmap("../texture.jpg", BitmapPixelFormat::RGBA);
+	if (std::holds_alternative<Bitmap2D>(optbitmap)) {
+		draw_image_ = std::move(std::get<Bitmap2D>(optbitmap));
+	}
+	else if (std::holds_alternative<InvalidPath>(optbitmap)) {
+		std::cout << "Invalid path: " << std::get<InvalidPath>(optbitmap).path << std::endl;
+		throw std::runtime_error("Image failure");
+	}
+	else if (std::holds_alternative<LoadError>(optbitmap)) {
+		std::cout << "Load Error: " << std::get<LoadError>(optbitmap).why << std::endl;
+		throw std::runtime_error("Image failure");
+	}
+	
+	for (int i = 0; i < maxFramesInFlight_; i++) {
+		Texture texture = copy_bitmap_to_gpu(physical_device(),
+											 device(),
+											 command_pool(),
+											 graphics_queue(),
+											 vk::MemoryPropertyFlagBits::eDeviceLocal,
+											 draw_image_);
+		
+		draw_textures_.push_back(std::move(texture));
+	}
+}
+
 void VulkanRenderer::CreateCommandpool()
 {
     auto commandPoolCreateInfo = vk::CommandPoolCreateInfo{}
@@ -818,7 +878,7 @@ void VulkanRenderer::DrawFrame()
 		.setCommandBuffers(*(commandbuffers_[current_frame_]))
 		.setSignalSemaphores(signalSemaphores);
 	
-	graphics_queue(index_queues_).submit(submitInfo, *(inFlightFences_[current_frame_]));
+	::graphics_queue(index_queues_).submit(submitInfo, *(inFlightFences_[current_frame_]));
 
 	const std::vector<vk::SwapchainKHR> swapchains = {*swapchain_};
 	const std::vector<uint32_t> imageIndices = {imageIndex};

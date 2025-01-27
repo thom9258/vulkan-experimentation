@@ -6,6 +6,7 @@
 #include <polymorph/polymorph.hpp>
 
 #include <variant>
+#include <array>
 #include <optional>
 
 [[nodiscard]]
@@ -275,4 +276,424 @@ read_binary_file(const std::string& filename)
     file.read(reinterpret_cast<char*>(buffer.data()), sizeof(buffer[0]) * buffer.size());
     file.close();
     return buffer;
+}
+
+
+#if 0
+[[nodiscard]]
+std::optional<uint32_t>
+find_memory_type(const vk::PhysicalDeviceMemoryProperties& memoryProperties,
+				 uint32_t typeBits,
+				 const vk::MemoryPropertyFlags requirementsMask)
+{
+	uint32_t typeIndex = uint32_t( ~0 );
+	for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; i++) {
+		const bool has_requirements =
+			((memoryProperties.memoryTypes[i].propertyFlags & requirementsMask) == requirementsMask);
+
+		if ((typeBits & 1) && has_requirements) {
+			typeIndex = i;
+			break;
+		}
+		typeBits >>= 1;
+	}
+
+	if (typeIndex == uint32_t( ~0 ) )
+		return {};
+	return typeIndex;
+}
+
+uint32_t findMemoryType(vk::BufferUsageFlags usage,
+						vk::MemoryPropertyFlags properties,
+						vk::PhysicalDeviceMemoryProperties memProperties)
+{
+    for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
+        if ((typeFilter & (1 << i)) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties) {
+            return i;
+        }
+    }
+
+    throw std::runtime_error("failed to find suitable memory type!");
+}
+#endif
+
+uint32_t 
+findMemoryType(vk::PhysicalDeviceMemoryProperties const & memoryProperties,
+			   uint32_t typeBits,
+			   vk::MemoryPropertyFlags requirementsMask)
+{
+	uint32_t typeIndex = uint32_t( ~0 );
+	for ( uint32_t i = 0; i < memoryProperties.memoryTypeCount; i++ ) {
+		if ((typeBits & 1) && ((memoryProperties.memoryTypes[i].propertyFlags & requirementsMask) == requirementsMask)) {
+			typeIndex = i;
+			break;
+		}
+		typeBits >>= 1;
+	}
+	assert( typeIndex != uint32_t( ~0 ) );
+	return typeIndex;
+}
+
+struct AllocatedMemory
+{
+	vk::UniqueBuffer buffer; 
+	vk::UniqueDeviceMemory memory;
+};
+
+AllocatedMemory
+allocate_memory(vk::PhysicalDevice& physical_device,
+				vk::Device& device,
+				const vk::DeviceSize size,
+				const vk::BufferUsageFlags usage,
+				const vk::MemoryPropertyFlags properties)
+{
+	const auto bufferInfo = vk::BufferCreateInfo{}
+		.setSize(size)
+		.setUsage(usage)
+		.setSharingMode(vk::SharingMode::eExclusive);
+
+	AllocatedMemory buffer_and_memory{};
+	buffer_and_memory.buffer = device.createBufferUnique(bufferInfo, nullptr);
+
+	vk::PhysicalDeviceMemoryProperties memProperties = physical_device.getMemoryProperties();
+    vk::MemoryRequirements memRequirements =
+		device.getBufferMemoryRequirements(*(buffer_and_memory.buffer));
+
+	const auto memoryTypeIndex = findMemoryType(memProperties,
+												memRequirements.memoryTypeBits,
+												properties);
+
+    auto allocInfo = vk::MemoryAllocateInfo{}
+		.setAllocationSize(memRequirements.size)
+		.setMemoryTypeIndex(memoryTypeIndex);
+
+	buffer_and_memory.memory = device.allocateMemoryUnique(allocInfo, nullptr);
+	device.bindBufferMemory(*(buffer_and_memory.buffer),
+							*(buffer_and_memory.memory),
+							0);
+
+	return buffer_and_memory;
+}
+
+void
+copy_to_allocated_memory(vk::Device& device,
+						 AllocatedMemory& allocated_memory,
+						 void const* data,
+						 const size_t size)
+{
+	void* staging_ptr = device.mapMemory(allocated_memory.memory.get(),
+										 0,
+										 size,
+										 vk::MemoryMapFlags());
+	memcpy(staging_ptr, data, size);
+	device.unmapMemory(allocated_memory.memory.get());
+}
+
+
+AllocatedMemory
+create_staging_buffer(vk::PhysicalDevice& physical_device,
+					  vk::Device& device,
+					  void const* data,
+					  const vk::DeviceSize size)
+{
+	AllocatedMemory staging =
+		allocate_memory(physical_device,
+							  device, 
+							  size,
+							  vk::BufferUsageFlagBits::eTransferSrc,
+							  vk::MemoryPropertyFlagBits::eHostVisible
+							  | vk::MemoryPropertyFlagBits::eHostCoherent);
+
+	copy_to_allocated_memory(device,
+							 staging,
+							 data,
+							 size);
+	return staging;
+}
+
+struct AllocatedImage
+{
+	vk::UniqueImage image;
+	vk::UniqueDeviceMemory memory;
+};
+
+AllocatedImage
+allocate_image(vk::PhysicalDevice physical_device,
+			   vk::Device device,
+			   const vk::Extent3D extent,
+			   const vk::Format format,
+			   const vk::ImageTiling tiling,
+			   const vk::MemoryPropertyFlags propertyFlags) noexcept
+{
+	const auto imageCreateInfo = vk::ImageCreateInfo{}
+		.setImageType(vk::ImageType::e2D)
+		.setFormat(format)
+		.setExtent(extent)
+		.setMipLevels(1)
+		.setArrayLayers(1)
+		.setTiling(tiling)
+		.setUsage(vk::ImageUsageFlagBits::eTransferDst 
+				  | vk::ImageUsageFlagBits::eSampled) 
+		.setInitialLayout(vk::ImageLayout::eUndefined)
+		.setSharingMode(vk::SharingMode::eExclusive)
+		.setSamples(vk::SampleCountFlagBits::e1);
+	
+	AllocatedImage out{};
+	out.image = device.createImageUnique(imageCreateInfo);
+	
+	vk::PhysicalDeviceMemoryProperties memProperties = physical_device.getMemoryProperties();
+    vk::MemoryRequirements memRequirements =
+		device.getImageMemoryRequirements(out.image.get());
+
+	const auto memoryTypeIndex = findMemoryType(memProperties,
+												memRequirements.memoryTypeBits,
+												propertyFlags);
+
+    auto allocInfo = vk::MemoryAllocateInfo{}
+		.setAllocationSize(memRequirements.size)
+		.setMemoryTypeIndex(memoryTypeIndex);
+	out.memory = device.allocateMemoryUnique(allocInfo, nullptr);
+
+	device.bindImageMemory(out.image.get(), out.memory.get(), 0);
+	return out;
+}
+
+vk::UniqueCommandBuffer
+beginSingleTimeCommands(vk::Device& device,
+						vk::CommandPool& command_pool) 
+{
+    auto allocInfo = vk::CommandBufferAllocateInfo{}
+		.setLevel(vk::CommandBufferLevel::ePrimary)
+		.setCommandPool(command_pool)
+		.setCommandBufferCount(1);
+
+    vk::UniqueCommandBuffer commandBuffer =
+		std::move(device.allocateCommandBuffersUnique(allocInfo).front());
+
+    auto beginInfo = vk::CommandBufferBeginInfo{}
+		.setFlags(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
+    commandBuffer->begin(beginInfo);
+    return commandBuffer;
+}
+
+
+void
+endSingleTimeCommands(vk::Queue& queue,
+					  vk::CommandBuffer& command_buffer) 
+{
+	command_buffer.end();
+	auto submitinfo = vk::SubmitInfo{}
+		.setCommandBuffers(command_buffer);
+	queue.submit(submitinfo);
+	queue.waitIdle();
+}
+
+void
+with_buffer_submit(vk::Device& device,
+				   vk::CommandPool& command_pool,
+				   vk::Queue& queue,
+				   std::function<void(vk::CommandBuffer&)>&& f)
+{
+	auto buffer = beginSingleTimeCommands(device, command_pool);
+	f(buffer.get());
+	endSingleTimeCommands(queue, buffer.get());
+}
+
+void
+copy_buffer(vk::Device& device,
+			vk::CommandPool& command_pool,
+			vk::Queue& queue,
+			vk::Buffer& src,
+			vk::Buffer& dst,
+			vk::DeviceSize size)
+{
+	with_buffer_submit(device, command_pool, queue,
+						[&] (vk::CommandBuffer& commandbuffer)
+						{
+							auto region = vk::BufferCopy{}
+								.setSize(size);
+							commandbuffer.copyBuffer(src,dst, region);
+						});
+}
+
+void
+transition_image_layout(vk::Image& image,
+						const vk::ImageLayout old_layout,
+						const vk::ImageLayout new_layout,
+						vk::CommandBuffer& commandbuffer)
+{
+	auto range = vk::ImageSubresourceRange{}
+		.setAspectMask(vk::ImageAspectFlagBits::eColor)
+		.setBaseMipLevel(0)
+		.setLevelCount(1)
+		.setBaseArrayLayer(0)
+		.setLayerCount(1);
+	
+	auto barrier = vk::ImageMemoryBarrier{}
+		.setOldLayout(old_layout)
+		.setNewLayout(new_layout)
+		.setSrcQueueFamilyIndex(vk::QueueFamilyIgnored)
+		.setDstQueueFamilyIndex(vk::QueueFamilyIgnored)
+		.setImage(image)
+		.setSubresourceRange(range);
+
+	vk::PipelineStageFlags sourceStage;
+	vk::PipelineStageFlags destinationStage;
+
+	if (old_layout == vk::ImageLayout::eUndefined 
+		&& new_layout == vk::ImageLayout::eTransferDstOptimal) {
+		barrier
+			.setSrcAccessMask(vk::AccessFlags())
+			.setDstAccessMask(vk::AccessFlagBits::eTransferWrite);
+		sourceStage = vk::PipelineStageFlagBits::eTopOfPipe;
+		destinationStage = vk::PipelineStageFlagBits::eTransfer;
+	}
+	else if (old_layout == vk::ImageLayout::eTransferDstOptimal
+			 && new_layout == vk::ImageLayout::eShaderReadOnlyOptimal) {
+
+		barrier
+			.setSrcAccessMask(vk::AccessFlagBits::eTransferWrite)
+			.setDstAccessMask(vk::AccessFlagBits::eShaderRead);
+		sourceStage = vk::PipelineStageFlagBits::eTransfer;
+		destinationStage = vk::PipelineStageFlagBits::eFragmentShader;
+	}
+	else {
+		throw std::invalid_argument("unsupported layout transition!");
+	}
+
+	commandbuffer.pipelineBarrier(sourceStage,
+								  destinationStage,
+								  vk::DependencyFlags(), 
+								  nullptr,
+								  nullptr,
+								  barrier);
+};
+
+void
+submit_transition_image_layout(vk::Device& device,
+							   vk::CommandPool& command_pool,
+							   vk::Queue& queue,
+							   vk::Image& image,
+							   vk::ImageLayout old_layout,
+							   vk::ImageLayout new_layout)
+{
+	with_buffer_submit(device, command_pool, queue,
+					   [&] (vk::CommandBuffer& commandbuffer)
+					   {
+						   transition_image_layout(image, old_layout, new_layout, commandbuffer);
+					   });
+}
+
+void
+copy_buffer_to_image(vk::Buffer& buffer,
+					 vk::Image& image,
+					 const uint32_t width,
+					 const uint32_t height,
+					 vk::CommandBuffer& commandbuffer)
+{
+	auto subresource = vk::ImageSubresourceLayers{}
+		.setAspectMask(vk::ImageAspectFlagBits::eColor)
+		.setMipLevel(0)
+		.setBaseArrayLayer(0)
+		.setLayerCount(1);
+	
+	auto offset = vk::Offset3D{}
+		.setX(0)
+		.setY(0)
+		.setZ(0);
+	
+	auto extent = vk::Extent3D{}
+		.setWidth(width)
+		.setHeight(height)
+		.setDepth(1);
+	
+	auto region = vk::BufferImageCopy{}
+		.setBufferOffset(0)
+		.setBufferRowLength(0)
+		.setBufferImageHeight(0)
+		.setImageSubresource(subresource)
+		.setImageOffset(offset)
+		.setImageExtent(extent);
+	
+	commandbuffer.copyBufferToImage(buffer,
+									image,
+									vk::ImageLayout::eTransferDstOptimal,
+									region);
+}
+
+void
+submit_copy_buffer_to_image(vk::Device& device,
+							vk::CommandPool& command_pool,
+							vk::Queue& queue,
+							vk::Buffer& buffer,
+							vk::Image& image,
+							const uint32_t width,
+							const uint32_t height)
+{
+	with_buffer_submit(device, command_pool, queue,
+						[&] (vk::CommandBuffer& commandbuffer)
+						{
+							copy_buffer_to_image(buffer, image, width, height, commandbuffer);
+						});
+}
+
+
+void
+blit_image_to_image(vk::Image& src,
+					const vk::Extent2D src_size,
+					vk::Image& dst,
+					const vk::Extent2D dst_size,
+					vk::CommandBuffer& commandbuffer)
+{
+	std::array<vk::Offset3D, 2> src_offsets {
+		vk::Offset3D{}.setX(0).setY(0).setZ(0),
+		vk::Offset3D{}.setX(src_size.width).setY(src_size.height).setZ(1),
+	};
+	std::array<vk::Offset3D, 2> dst_offsets {
+		vk::Offset3D{}.setX(0).setY(0).setZ(0),
+		vk::Offset3D{}.setX(dst_size.width).setY(dst_size.height).setZ(1),
+	};
+	
+	auto src_subresource = vk::ImageSubresourceLayers{}
+		.setAspectMask(vk::ImageAspectFlagBits::eColor)
+		.setBaseArrayLayer(0)
+		.setLayerCount(1)
+		.setMipLevel(0);
+	
+	auto dst_subresource = vk::ImageSubresourceLayers{}
+		.setAspectMask(vk::ImageAspectFlagBits::eColor)
+		.setBaseArrayLayer(0)
+		.setLayerCount(1)
+		.setMipLevel(0);
+	
+	auto blit_region = vk::ImageBlit2{}
+		.setSrcOffsets(src_offsets)
+		.setSrcSubresource(src_subresource)
+		.setDstOffsets(dst_offsets)
+		.setDstSubresource(dst_subresource);
+	auto blit_info = vk::BlitImageInfo2{}
+		.setRegions(blit_region)
+		.setDstImage(dst)
+		.setDstImageLayout(vk::ImageLayout::eTransferDstOptimal)
+		.setSrcImage(src)
+		.setSrcImageLayout(vk::ImageLayout::eTransferSrcOptimal)
+		.setFilter(vk::Filter::eLinear);
+	
+	commandbuffer.blitImage2(blit_info);
+}
+
+void
+submit_blit_image_to_image(vk::Device& device,
+						   vk::CommandPool& command_pool,
+						   vk::Queue& queue,
+						   vk::Image& src,
+						   vk::Image& dst,
+						   const vk::Extent2D src_size,
+						   const vk::Extent2D dst_size)
+{
+	with_buffer_submit(device, command_pool, queue,
+					   [&] (vk::CommandBuffer& commandbuffer)
+					   {
+						   blit_image_to_image(src, src_size, dst, dst_size, commandbuffer);
+					   });
 }

@@ -8,11 +8,10 @@
 
 #include "VulkanRenderer.hpp"
 
-
 int main()
 {
 	VulkanRenderer renderer{};
-
+	
 	/** ************************************************************************
 	 * Frame Loop
 	 */
