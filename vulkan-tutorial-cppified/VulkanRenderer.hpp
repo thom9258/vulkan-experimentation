@@ -63,7 +63,8 @@ private:
 	void CreateDrawTextures();
 
 	void RecordCommandbuffer(vk::CommandBuffer& commandbuffer,
-							 const uint32_t index);
+							 const uint32_t index,
+							 const vk::ClearValue clear_value);
 
 	const int maxFramesInFlight_ = 2;
 	uint32_t current_frame_{0};
@@ -410,8 +411,10 @@ void VulkanRenderer::CreateSwapChain()
 		.setImageColorSpace(swapchain_format_.colorSpace)
 		.setImageExtent(swapchain_extent)
 		.setImageArrayLayers(1)
-		.setImageUsage(vk::ImageUsageFlagBits::eColorAttachment)
-		//| vk::ImageUsageFlagBits::eTransferSrc)
+		.setImageUsage(vk::ImageUsageFlagBits::eColorAttachment
+					   //| vk::ImageUsageFlagBits::eTransferSrc
+					   | vk::ImageUsageFlagBits::eTransferDst
+					   | vk::ImageUsageFlagBits::eSampled)
 		.setClipped(true)
 		.setPreTransform(preTransform)
 		.setCompositeAlpha(compositeAlpha)
@@ -711,6 +714,11 @@ void VulkanRenderer::CreateDrawTextures()
 {
 	Texture texture;
 	auto optbitmap = load_bitmap("../texture.jpg", BitmapPixelFormat::RGBA);
+
+	//TODO: Here it would be nice to have a failsafe texture, that is an embedded bitmap
+	//      such as a simple checkerboard texture to notify that texture load failed.
+	//      Then using this failsafe we can write a load_bitmap_or function that 
+	//      guarantees return of a bitmap that can be used.
 	if (std::holds_alternative<Bitmap2D>(optbitmap)) {
 		draw_image_ = std::move(std::get<Bitmap2D>(optbitmap));
 	}
@@ -758,9 +766,29 @@ void VulkanRenderer::CreateCommandbuffers()
 	std::cout << "> Created " << commandbuffers_.size() << " Command buffers" << std::endl;
 }
 
+void VulkanRenderer::CreateSyncObjects()
+{
+	const auto semaphoreCreateInfo = vk::SemaphoreCreateInfo{};
+	const auto fenceCreateInfo = vk::FenceCreateInfo{}
+		.setFlags(vk::FenceCreateFlagBits::eSignaled);
+	// Signaled means that the fence is engaged at creation, this
+	// simplifies the first time we want to wait for it to not need
+	// extra logic
+
+	for (int i = 0; i < maxFramesInFlight_; i++) {
+		imageAvailableSemaphores_.push_back(device_->createSemaphoreUnique(semaphoreCreateInfo,
+																		   nullptr));
+		renderFinishedSemaphores_.push_back(device_->createSemaphoreUnique(semaphoreCreateInfo,
+																		   nullptr));
+		inFlightFences_.push_back(device_->createFenceUnique(fenceCreateInfo, nullptr));
+	}
+
+	std::cout << "> Created Sync Objects" << std::endl;
+}
 
 void VulkanRenderer::RecordCommandbuffer(vk::CommandBuffer& commandbuffer,
-										 const uint32_t index)
+										 const uint32_t index,
+										 const vk::ClearValue clear_color)
 {
 	const auto beginInfo = vk::CommandBufferBeginInfo{};
 	commandbuffer.begin(beginInfo);
@@ -771,14 +799,11 @@ void VulkanRenderer::RecordCommandbuffer(vk::CommandBuffer& commandbuffer,
 		.setOffset(vk::Offset2D{}.setX(0.0f)
 				                 .setY(0.0f));
 	
-	const auto clearColor = vk::ClearValue{}
-		.setColor({0.1f, 0.1f, 0.1f, 1.0f});
-	
 	const auto renderPassInfo = vk::RenderPassBeginInfo{}
 		.setRenderPass(*renderpass_)
 		.setFramebuffer(*framebuffers_[index])
 		.setRenderArea(renderArea)
-		.setClearValues(clearColor);
+		.setClearValues(clear_color);
 
 	commandbuffer.beginRenderPass(renderPassInfo, vk::SubpassContents::eInline);
 	commandbuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline_);
@@ -810,27 +835,138 @@ void VulkanRenderer::RecordCommandbuffer(vk::CommandBuffer& commandbuffer,
     const uint32_t firstInstance = 0;
 	commandbuffer.draw(vertexCount, instanceCount, firstVertex, firstInstance);
 	commandbuffer.endRenderPass();
-	commandbuffer.end();
-}
-
-void VulkanRenderer::CreateSyncObjects()
-{
-	const auto semaphoreCreateInfo = vk::SemaphoreCreateInfo{};
-	const auto fenceCreateInfo = vk::FenceCreateInfo{}
-		.setFlags(vk::FenceCreateFlagBits::eSignaled);
-	// Signaled means that the fence is engaged at creation, this
-	// simplifies the first time we want to wait for it to not need
-	// extra logic
-
-	for (int i = 0; i < maxFramesInFlight_; i++) {
-		imageAvailableSemaphores_.push_back(device_->createSemaphoreUnique(semaphoreCreateInfo,
-																		   nullptr));
-		renderFinishedSemaphores_.push_back(device_->createSemaphoreUnique(semaphoreCreateInfo,
-																		   nullptr));
-		inFlightFences_.push_back(device_->createFenceUnique(fenceCreateInfo, nullptr));
+	
+	std::cout << "starting transitioning of draw & swapchain images for blit!" << std::endl;
+	/*
+https://github.com/googlesamples/vulkan-basic-samples/blob/master/API-Samples/copy_blit_image/copy_blit_image.cpp
+https://github.com/KhronosGroup/Vulkan-Hpp/blob/main/samples/CopyBlitImage/CopyBlitImage.cpp
+	 */
+	{
+		auto range = vk::ImageSubresourceRange{}
+			.setAspectMask(vk::ImageAspectFlagBits::eColor)
+			.setBaseMipLevel(0)
+			.setLevelCount(1)
+			.setBaseArrayLayer(0)
+			.setLayerCount(1);
+		
+		auto barrier = vk::ImageMemoryBarrier{}
+			.setOldLayout(vk::ImageLayout::eTransferDstOptimal)
+			.setNewLayout(vk::ImageLayout::eTransferSrcOptimal)
+			.setImage(draw_textures_[index].image.image.get())
+			.setSubresourceRange(range)
+			.setSrcAccessMask(vk::AccessFlagBits::eTransferWrite)
+			.setDstAccessMask(vk::AccessFlagBits::eTransferWrite)
+			.setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+			.setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED);
+		
+		commandbuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+									  vk::PipelineStageFlagBits::eTransfer,
+									  vk::DependencyFlags(),
+									  nullptr,
+									  nullptr,
+									  barrier);
+		
+		std::cout << "transitioned draw image for src blit!" << std::endl;
 	}
 
-	std::cout << "> Created Sync Objects" << std::endl;
+	{
+		auto range = vk::ImageSubresourceRange{}
+			.setAspectMask(vk::ImageAspectFlagBits::eColor)
+			.setBaseMipLevel(0)
+			.setLevelCount(1)
+			.setBaseArrayLayer(0)
+			.setLayerCount(1);
+		
+		auto barrier = vk::ImageMemoryBarrier{}
+			.setOldLayout(vk::ImageLayout::ePresentSrcKHR)
+			.setNewLayout(vk::ImageLayout::eTransferDstOptimal)
+			.setImage(swapchain_images_[index])
+			.setSubresourceRange(range)
+			// is this correct if layout is present??
+			.setSrcAccessMask(vk::AccessFlagBits::eTransferWrite)
+			.setDstAccessMask(vk::AccessFlagBits::eTransferWrite)
+			.setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+			.setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED);
+		
+		commandbuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe,
+									  // TODO: maybe none if no flags needed?
+									  vk::PipelineStageFlagBits::eNone,
+									  vk::DependencyFlags(),
+									  nullptr,
+									  nullptr,
+									  barrier);
+		
+		std::cout << "transitioned swapchain image for dst blit!" << std::endl;
+	}
+
+	{
+	auto src_subresource = vk::ImageSubresourceLayers{}
+		.setAspectMask(vk::ImageAspectFlagBits::eColor)
+		.setBaseArrayLayer(0)
+		.setLayerCount(1)
+		.setMipLevel(0);
+	const std::array<vk::Offset3D, 2> src_offsets{ 
+		vk::Offset3D(0, 0, 0),
+		vk::Offset3D(draw_textures_[index].extent.width,
+					 draw_textures_[index].extent.height,
+					 1)
+	};
+
+	auto dst_subresource = vk::ImageSubresourceLayers{}
+		.setAspectMask(vk::ImageAspectFlagBits::eColor)
+		.setBaseArrayLayer(0)
+		.setLayerCount(1)
+		.setMipLevel(0);
+	const auto window = WindowExtent();
+	const std::array<vk::Offset3D, 2> dst_offsets{ 
+		vk::Offset3D(0, 0, 0),
+		vk::Offset3D(window.width/2, window.height/2, 1)
+	};
+	
+    auto image_blit = vk::ImageBlit{}
+		.setSrcOffsets(src_offsets)
+		.setSrcSubresource(src_subresource)
+		.setDstOffsets(dst_offsets)
+		.setDstSubresource(dst_subresource);
+		
+	commandbuffer.blitImage(draw_textures_[index].image.image.get(),
+							vk::ImageLayout::eTransferSrcOptimal,
+							swapchain_images_[index],
+							vk::ImageLayout::eTransferDstOptimal,
+							image_blit,
+							vk::Filter::eLinear);
+		std::cout << "blitted draw image to swapchain image!" << std::endl;
+	}
+	{
+		auto range = vk::ImageSubresourceRange{}
+			.setAspectMask(vk::ImageAspectFlagBits::eColor)
+			.setBaseMipLevel(0)
+			.setLevelCount(1)
+			.setBaseArrayLayer(0)
+			.setLayerCount(1);
+		
+		auto barrier = vk::ImageMemoryBarrier{}
+			.setOldLayout(vk::ImageLayout::eTransferDstOptimal)
+			.setNewLayout(vk::ImageLayout::ePresentSrcKHR)
+			.setImage(swapchain_images_[index])
+			.setSubresourceRange(range)
+			// are these access flags correct if layout is present??
+			.setSrcAccessMask(vk::AccessFlagBits::eTransferWrite)
+			.setDstAccessMask(vk::AccessFlagBits::eTransferWrite)
+			.setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+			.setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED);
+		
+		commandbuffer.pipelineBarrier(vk::PipelineStageFlags(),
+									  vk::PipelineStageFlagBits::eTransfer,
+									  vk::DependencyFlags(),
+									  nullptr,
+									  nullptr,
+									  barrier);
+		
+		std::cout << "transitioned swapchain image for present!" << std::endl;
+	}
+
+	commandbuffer.end();
 }
 
 void VulkanRenderer::DrawFrame()
@@ -851,15 +987,20 @@ void VulkanRenderer::DrawFrame()
 
 	assert(result == vk::Result::eSuccess);
 	assert(imageIndex < swapchain_imageviews_.size());
-	//const std::string line = ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>";
-	//std::cout << line 
-	//<< "\n > index:         " << imageIndex  
-	//<< "\n > current frame: " << current_frame_ 
-	//<< "\n > total frames:  " << total_frames_ 
-	//<< std::endl;
+	const std::string line = ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>";
+	std::cout << line 
+			  << "\n > index:         " << imageIndex  
+			  << "\n > current frame: " << current_frame_ 
+			  << "\n > total frames:  " << total_frames_ 
+			  << std::endl;
 	
 	commandbuffers_[current_frame_]->reset(vk::CommandBufferResetFlags());
-	RecordCommandbuffer(*(commandbuffers_[current_frame_]), imageIndex);
+	
+	const float flash = std::abs(std::sin(total_frames_ / 120.f));
+	const auto clear_color = vk::ClearValue{}
+		.setColor({0.0f, 0.0f, flash, 1.0f});
+
+	RecordCommandbuffer(*(commandbuffers_[current_frame_]), imageIndex, clear_color);
 
 	const std::vector<vk::Semaphore> waitSemaphores{
 		*(imageAvailableSemaphores_[current_frame_]),
@@ -893,4 +1034,6 @@ void VulkanRenderer::DrawFrame()
 
     current_frame_ = (current_frame_ + 1) % maxFramesInFlight_;
 	total_frames_++;
+	
+	std::this_thread::sleep_for(std::chrono::milliseconds(500));
 }

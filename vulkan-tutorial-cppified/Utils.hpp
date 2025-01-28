@@ -432,7 +432,8 @@ allocate_image(vk::PhysicalDevice physical_device,
 		.setMipLevels(1)
 		.setArrayLayers(1)
 		.setTiling(tiling)
-		.setUsage(vk::ImageUsageFlagBits::eTransferDst 
+		.setUsage(vk::ImageUsageFlagBits::eTransferDst
+				  | vk::ImageUsageFlagBits::eTransferSrc
 				  | vk::ImageUsageFlagBits::eSampled) 
 		.setInitialLayout(vk::ImageLayout::eUndefined)
 		.setSharingMode(vk::SharingMode::eExclusive)
@@ -568,6 +569,180 @@ transition_image_layout(vk::Image& image,
 								  nullptr,
 								  barrier);
 };
+
+vk::ImageSubresourceRange 
+image_subresource_range(const vk::ImageAspectFlags aspect_mask)
+{
+    return vk::ImageSubresourceRange{}
+		.setAspectMask(aspect_mask)
+		.setBaseMipLevel(0)
+		.setLevelCount(VK_REMAINING_MIP_LEVELS)
+		.setBaseArrayLayer(0)
+		.setLayerCount(VK_REMAINING_ARRAY_LAYERS);
+}
+
+/**
+* Apparently this is a general-use layout transition method,
+* But note it is slower than methods that take actual StageMasks
+* into account.
+* https://vkguide.dev/docs/new_chapter_1/vulkan_mainloop_code/
+*
+* This method requires device extensions:
+*     VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME
+*     VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME
+*/
+#if 0
+void transition_image_with_barrier2(vk::Image& image,
+									const vk::ImageLayout old_layout,
+									const vk::ImageLayout new_layout,
+									vk::CommandBuffer& commandbuffer)
+{
+    const auto aspectMask = (new_layout == vk::ImageLayout::eDepthAttachmentOptimal)
+		? vk::ImageAspectFlagBits::eDepth
+		: vk::ImageAspectFlagBits::eColor;
+
+	auto barrier = vk::ImageMemoryBarrier2{}
+		.setOldLayout(old_layout)
+		.setNewLayout(new_layout)
+		.setSrcStageMask(vk::PipelineStageFlagBits2::eAllCommands)
+		.setSrcAccessMask(vk::AccessFlagBits2::eMemoryWrite)
+		.setDstStageMask(vk::PipelineStageFlagBits2::eAllCommands)
+		.setDstAccessMask(vk::AccessFlagBits2::eMemoryWrite
+						  | vk::AccessFlagBits2::eMemoryRead)
+		.setImage(image)
+		.setSubresourceRange(image_subresource_range(aspectMask));
+
+    auto depInfo = vk::DependencyInfo{}
+		.setImageMemoryBarriers(barrier);
+
+    commandbuffer.pipelineBarrier2(depInfo);
+}
+#endif
+
+/**
+* https://vkguide.dev/docs/chapter-5/loading_images/
+*/
+vk::ImageLayout 
+transition_image_for_buffer_write(vk::Image& image,
+								  vk::CommandBuffer& commandbuffer)
+{
+    auto range = vk::ImageSubresourceRange{}
+		.setAspectMask(vk::ImageAspectFlagBits::eColor)
+		.setBaseMipLevel(0)
+		.setLevelCount(1)
+		.setBaseArrayLayer(0)
+		.setLayerCount(1);
+
+	auto barrier = vk::ImageMemoryBarrier{}
+		.setOldLayout(vk::ImageLayout::eUndefined)
+		.setNewLayout(vk::ImageLayout::eTransferDstOptimal)
+		.setImage(image)
+		.setSubresourceRange(range)
+		.setSrcAccessMask(vk::AccessFlags())
+		.setDstAccessMask(vk::AccessFlagBits::eTransferWrite);
+
+    commandbuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe,
+								  vk::PipelineStageFlagBits::eTransfer,
+								  vk::DependencyFlags(),
+								  nullptr,
+								  nullptr,
+								  barrier);
+
+
+	return vk::ImageLayout::eTransferDstOptimal;
+}
+
+vk::ImageLayout 
+transition_image_for_source_blit(vk::Image& image,
+								 const vk::ImageLayout old_layout,
+								 vk::CommandBuffer& commandbuffer)
+{
+    auto range = vk::ImageSubresourceRange{}
+		.setAspectMask(vk::ImageAspectFlagBits::eColor)
+		.setBaseMipLevel(0)
+		.setLevelCount(1)
+		.setBaseArrayLayer(0)
+		.setLayerCount(1);
+
+	auto barrier = vk::ImageMemoryBarrier{}
+		.setOldLayout(old_layout)
+		.setNewLayout(vk::ImageLayout::eTransferSrcOptimal)
+		.setImage(image)
+		.setSubresourceRange(range)
+		.setSrcAccessMask(vk::AccessFlags())
+		.setDstAccessMask(vk::AccessFlagBits::eTransferWrite);
+
+    commandbuffer.pipelineBarrier(vk::PipelineStageFlagBits::eHost,
+								  vk::PipelineStageFlagBits::eTransfer,
+								  vk::DependencyFlags(),
+								  nullptr,
+								  nullptr,
+								  barrier);
+
+
+	return vk::ImageLayout::eTransferSrcOptimal;
+}
+
+vk::ImageLayout 
+transition_image_for_destination_blit(vk::Image& image,
+									  const vk::ImageLayout old_layout,
+									  vk::CommandBuffer& commandbuffer)
+{
+    auto range = vk::ImageSubresourceRange{}
+		.setAspectMask(vk::ImageAspectFlagBits::eColor)
+		.setBaseMipLevel(0)
+		.setLevelCount(1)
+		.setBaseArrayLayer(0)
+		.setLayerCount(1);
+
+	auto barrier = vk::ImageMemoryBarrier{}
+		.setOldLayout(old_layout)
+		.setNewLayout(vk::ImageLayout::eTransferDstOptimal)
+		.setImage(image)
+		.setSubresourceRange(range)
+		.setSrcAccessMask(vk::AccessFlags())
+		.setDstAccessMask(vk::AccessFlagBits::eTransferWrite);
+
+    commandbuffer.pipelineBarrier(vk::PipelineStageFlagBits::eHost,
+								  vk::PipelineStageFlagBits::eTransfer,
+								  vk::DependencyFlags(),
+								  nullptr,
+								  nullptr,
+								  barrier);
+
+
+	return vk::ImageLayout::eTransferSrcOptimal;
+}
+
+vk::ImageLayout 
+transition_image_for_presentation(vk::Image& image,
+								  const vk::ImageLayout old_layout,
+								  vk::CommandBuffer& commandbuffer)
+{
+    auto range = vk::ImageSubresourceRange{}
+		.setAspectMask(vk::ImageAspectFlagBits::eColor)
+		.setBaseMipLevel(0)
+		.setLevelCount(1)
+		.setBaseArrayLayer(0)
+		.setLayerCount(1);
+
+	auto barrier = vk::ImageMemoryBarrier{}
+		.setOldLayout(old_layout)
+		.setNewLayout(vk::ImageLayout::ePresentSrcKHR)
+		.setImage(image)
+		.setSubresourceRange(range)
+		.setSrcAccessMask(vk::AccessFlagBits::eTransferWrite)
+		.setDstAccessMask(vk::AccessFlagBits::eMemoryRead);
+
+    commandbuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+								  vk::PipelineStageFlagBits::eBottomOfPipe,
+								  vk::DependencyFlags(),
+								  nullptr,
+								  nullptr,
+								  barrier);
+
+	return vk::ImageLayout::ePresentSrcKHR;
+}
 
 void
 submit_transition_image_layout(vk::Device& device,
