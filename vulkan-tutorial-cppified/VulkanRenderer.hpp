@@ -114,7 +114,6 @@ vk::PhysicalDevice& VulkanRenderer::physical_device()
 	return physical_device_;
 }
 
-
 vk::CommandPool& VulkanRenderer::command_pool()
 {
 	return commandpool_.get();
@@ -731,7 +730,7 @@ void VulkanRenderer::CreateDrawTextures()
 		throw std::runtime_error("Image failure");
 	}
 	
-	for (int i = 0; i < maxFramesInFlight_; i++) {
+	for (size_t i = 0; i < swapchain_images_.size(); i++) {
 		Texture texture = copy_bitmap_to_gpu(physical_device(),
 											 device(),
 											 command_pool(),
@@ -739,6 +738,37 @@ void VulkanRenderer::CreateDrawTextures()
 											 vk::MemoryPropertyFlagBits::eDeviceLocal,
 											 draw_image_);
 		
+		with_buffer_submit(device(),
+						   command_pool(),
+						   graphics_queue(),
+						   [&] (vk::CommandBuffer& commandbuffer)
+						   {
+							   auto range = vk::ImageSubresourceRange{}
+								   .setAspectMask(vk::ImageAspectFlagBits::eColor)
+								   .setBaseMipLevel(0)
+								   .setLevelCount(1)
+								   .setBaseArrayLayer(0)
+								   .setLayerCount(1);
+		
+							   auto barrier = vk::ImageMemoryBarrier{}
+								   .setOldLayout(vk::ImageLayout::eTransferDstOptimal)
+								   .setNewLayout(vk::ImageLayout::eTransferSrcOptimal)
+								   .setImage(texture.allocated.image.get())
+								   .setSubresourceRange(range)
+								   .setSrcAccessMask(vk::AccessFlagBits::eTransferWrite)
+								   .setDstAccessMask(vk::AccessFlagBits::eTransferWrite)
+								   .setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+								   .setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED);
+		
+							   commandbuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+															 vk::PipelineStageFlagBits::eTransfer,
+															 vk::DependencyFlags(),
+															 nullptr,
+															 nullptr,
+															 barrier);
+						   });
+		
+		texture.layout = vk::ImageLayout::eTransferSrcOptimal;
 		draw_textures_.push_back(std::move(texture));
 	}
 }
@@ -784,6 +814,77 @@ void VulkanRenderer::CreateSyncObjects()
 	}
 
 	std::cout << "> Created Sync Objects" << std::endl;
+}
+
+void VulkanRenderer::DrawFrame()
+{
+	const auto maxTimeout = std::numeric_limits<unsigned int>::max();
+	auto waitresult = device_->waitForFences(*(inFlightFences_[current_frame_]),
+										 true,
+										 maxTimeout);
+	device_->resetFences(*(inFlightFences_[current_frame_]));
+
+	if (waitresult != vk::Result::eSuccess)
+		throw std::runtime_error("Could not wait for inFlightFence");
+	
+	auto [result, imageIndex] =
+		device_->acquireNextImageKHR(*swapchain_,
+									 maxTimeout,
+									 *(imageAvailableSemaphores_[current_frame_]));
+
+	assert(result == vk::Result::eSuccess);
+	assert(imageIndex < swapchain_imageviews_.size());
+#if 0
+	const std::string line = ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>";
+	std::cout << line 
+			  << "\n > index:         " << imageIndex  
+			  << "\n > current frame: " << current_frame_ 
+			  << "\n > total frames:  " << total_frames_ 
+			  << std::endl;
+#endif	
+
+	commandbuffers_[current_frame_]->reset(vk::CommandBufferResetFlags());
+	
+	const float flash = std::abs(std::sin(total_frames_ / 120.f));
+	const auto clear_color = vk::ClearValue{}
+		.setColor({0.0f, 0.0f, flash, 1.0f});
+
+	RecordCommandbuffer(*(commandbuffers_[current_frame_]), imageIndex, clear_color);
+
+	const std::vector<vk::Semaphore> waitSemaphores{
+		*(imageAvailableSemaphores_[current_frame_]),
+	};
+	const std::vector<vk::Semaphore> signalSemaphores{
+		*(renderFinishedSemaphores_[current_frame_]),
+	};
+	
+	const std::vector<vk::PipelineStageFlags> waitStages{
+		vk::PipelineStageFlagBits::eColorAttachmentOutput,
+	};
+
+	auto submitInfo = vk::SubmitInfo{}
+		.setWaitSemaphores(waitSemaphores)
+		.setWaitDstStageMask(waitStages)
+		.setCommandBuffers(*(commandbuffers_[current_frame_]))
+		.setSignalSemaphores(signalSemaphores);
+	
+	::graphics_queue(index_queues_).submit(submitInfo, *(inFlightFences_[current_frame_]));
+
+	const std::vector<vk::SwapchainKHR> swapchains = {*swapchain_};
+	const std::vector<uint32_t> imageIndices = {imageIndex};
+	auto presentInfo = vk::PresentInfoKHR{}
+		.setSwapchains(swapchains)
+		.setImageIndices(imageIndices)
+		.setWaitSemaphores(signalSemaphores);
+	
+	auto presentResult = present_queue(index_queues_).presentKHR(presentInfo);
+	if (presentResult != vk::Result::eSuccess)
+		throw std::runtime_error("Could not wait for inFlightFence");
+
+    current_frame_ = (current_frame_ + 1) % maxFramesInFlight_;
+	total_frames_++;
+	
+	std::this_thread::sleep_for(std::chrono::milliseconds(1000));
 }
 
 void VulkanRenderer::RecordCommandbuffer(vk::CommandBuffer& commandbuffer,
@@ -836,7 +937,6 @@ void VulkanRenderer::RecordCommandbuffer(vk::CommandBuffer& commandbuffer,
 	commandbuffer.draw(vertexCount, instanceCount, firstVertex, firstInstance);
 	commandbuffer.endRenderPass();
 	
-	std::cout << "starting transitioning of draw & swapchain images for blit!" << std::endl;
 	/*
 https://github.com/googlesamples/vulkan-basic-samples/blob/master/API-Samples/copy_blit_image/copy_blit_image.cpp
 https://github.com/KhronosGroup/Vulkan-Hpp/blob/main/samples/CopyBlitImage/CopyBlitImage.cpp
@@ -850,11 +950,16 @@ https://github.com/KhronosGroup/Vulkan-Hpp/blob/main/samples/CopyBlitImage/CopyB
 			.setLayerCount(1);
 		
 		auto barrier = vk::ImageMemoryBarrier{}
-			.setOldLayout(vk::ImageLayout::eTransferDstOptimal)
-			.setNewLayout(vk::ImageLayout::eTransferSrcOptimal)
-			.setImage(draw_textures_[index].image.image.get())
+			// Usually it is faster to use eUndefined for old layout, as in most
+			// cases we do not care about previous data in the swapchain.
+			// here we however do, as we draw to it, so we explicitly specify ePresentSrc
+			.setOldLayout(vk::ImageLayout::ePresentSrcKHR)
+			.setNewLayout(vk::ImageLayout::eTransferDstOptimal)
+			.setImage(swapchain_images_[index])
 			.setSubresourceRange(range)
-			.setSrcAccessMask(vk::AccessFlagBits::eTransferWrite)
+			// source access flags is eNone because there are no access
+			// flags for synchronization with the presentation engine
+			.setSrcAccessMask(vk::AccessFlagBits::eNone)
 			.setDstAccessMask(vk::AccessFlagBits::eTransferWrite)
 			.setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
 			.setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED);
@@ -865,77 +970,43 @@ https://github.com/KhronosGroup/Vulkan-Hpp/blob/main/samples/CopyBlitImage/CopyB
 									  nullptr,
 									  nullptr,
 									  barrier);
-		
-		std::cout << "transitioned draw image for src blit!" << std::endl;
 	}
-
 	{
-		auto range = vk::ImageSubresourceRange{}
+		auto src_subresource = vk::ImageSubresourceLayers{}
 			.setAspectMask(vk::ImageAspectFlagBits::eColor)
-			.setBaseMipLevel(0)
-			.setLevelCount(1)
 			.setBaseArrayLayer(0)
-			.setLayerCount(1);
+			.setLayerCount(1)
+			.setMipLevel(0);
+		const std::array<vk::Offset3D, 2> src_offsets{ 
+			vk::Offset3D(0, 0, 0),
+			vk::Offset3D(draw_textures_[index].extent.width,
+						 draw_textures_[index].extent.height,
+						 1)
+		};
 		
-		auto barrier = vk::ImageMemoryBarrier{}
-			.setOldLayout(vk::ImageLayout::ePresentSrcKHR)
-			.setNewLayout(vk::ImageLayout::eTransferDstOptimal)
-			.setImage(swapchain_images_[index])
-			.setSubresourceRange(range)
-			// is this correct if layout is present??
-			.setSrcAccessMask(vk::AccessFlagBits::eTransferWrite)
-			.setDstAccessMask(vk::AccessFlagBits::eTransferWrite)
-			.setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
-			.setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED);
+		auto dst_subresource = vk::ImageSubresourceLayers{}
+			.setAspectMask(vk::ImageAspectFlagBits::eColor)
+			.setBaseArrayLayer(0)
+			.setLayerCount(1)
+			.setMipLevel(0);
+		const auto window = WindowExtent();
+		const std::array<vk::Offset3D, 2> dst_offsets{ 
+			vk::Offset3D(0, 0, 0),
+			vk::Offset3D(window.width/2, window.height/2, 1)
+		};
 		
-		commandbuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe,
-									  // TODO: maybe none if no flags needed?
-									  vk::PipelineStageFlagBits::eNone,
-									  vk::DependencyFlags(),
-									  nullptr,
-									  nullptr,
-									  barrier);
+		auto image_blit = vk::ImageBlit{}
+			.setSrcOffsets(src_offsets)
+			.setSrcSubresource(src_subresource)
+			.setDstOffsets(dst_offsets)
+			.setDstSubresource(dst_subresource);
 		
-		std::cout << "transitioned swapchain image for dst blit!" << std::endl;
-	}
-
-	{
-	auto src_subresource = vk::ImageSubresourceLayers{}
-		.setAspectMask(vk::ImageAspectFlagBits::eColor)
-		.setBaseArrayLayer(0)
-		.setLayerCount(1)
-		.setMipLevel(0);
-	const std::array<vk::Offset3D, 2> src_offsets{ 
-		vk::Offset3D(0, 0, 0),
-		vk::Offset3D(draw_textures_[index].extent.width,
-					 draw_textures_[index].extent.height,
-					 1)
-	};
-
-	auto dst_subresource = vk::ImageSubresourceLayers{}
-		.setAspectMask(vk::ImageAspectFlagBits::eColor)
-		.setBaseArrayLayer(0)
-		.setLayerCount(1)
-		.setMipLevel(0);
-	const auto window = WindowExtent();
-	const std::array<vk::Offset3D, 2> dst_offsets{ 
-		vk::Offset3D(0, 0, 0),
-		vk::Offset3D(window.width/2, window.height/2, 1)
-	};
-	
-    auto image_blit = vk::ImageBlit{}
-		.setSrcOffsets(src_offsets)
-		.setSrcSubresource(src_subresource)
-		.setDstOffsets(dst_offsets)
-		.setDstSubresource(dst_subresource);
-		
-	commandbuffer.blitImage(draw_textures_[index].image.image.get(),
-							vk::ImageLayout::eTransferSrcOptimal,
-							swapchain_images_[index],
-							vk::ImageLayout::eTransferDstOptimal,
-							image_blit,
-							vk::Filter::eLinear);
-		std::cout << "blitted draw image to swapchain image!" << std::endl;
+		commandbuffer.blitImage(draw_textures_[index].allocated.image.get(),
+								vk::ImageLayout::eTransferSrcOptimal,
+								swapchain_images_[index],
+								vk::ImageLayout::eTransferDstOptimal,
+								image_blit,
+								vk::Filter::eLinear);
 	}
 	{
 		auto range = vk::ImageSubresourceRange{}
@@ -952,88 +1023,17 @@ https://github.com/KhronosGroup/Vulkan-Hpp/blob/main/samples/CopyBlitImage/CopyB
 			.setSubresourceRange(range)
 			// are these access flags correct if layout is present??
 			.setSrcAccessMask(vk::AccessFlagBits::eTransferWrite)
-			.setDstAccessMask(vk::AccessFlagBits::eTransferWrite)
+			.setDstAccessMask(vk::AccessFlagBits::eTransferRead)
 			.setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
 			.setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED);
 		
-		commandbuffer.pipelineBarrier(vk::PipelineStageFlags(),
+		commandbuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
 									  vk::PipelineStageFlagBits::eTransfer,
 									  vk::DependencyFlags(),
 									  nullptr,
 									  nullptr,
 									  barrier);
-		
-		std::cout << "transitioned swapchain image for present!" << std::endl;
 	}
 
 	commandbuffer.end();
-}
-
-void VulkanRenderer::DrawFrame()
-{
-	const auto maxTimeout = std::numeric_limits<unsigned int>::max();
-	auto waitresult = device_->waitForFences(*(inFlightFences_[current_frame_]),
-										 true,
-										 maxTimeout);
-	device_->resetFences(*(inFlightFences_[current_frame_]));
-
-	if (waitresult != vk::Result::eSuccess)
-		throw std::runtime_error("Could not wait for inFlightFence");
-	
-	auto [result, imageIndex] =
-		device_->acquireNextImageKHR(*swapchain_,
-									 maxTimeout,
-									 *(imageAvailableSemaphores_[current_frame_]));
-
-	assert(result == vk::Result::eSuccess);
-	assert(imageIndex < swapchain_imageviews_.size());
-	const std::string line = ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>";
-	std::cout << line 
-			  << "\n > index:         " << imageIndex  
-			  << "\n > current frame: " << current_frame_ 
-			  << "\n > total frames:  " << total_frames_ 
-			  << std::endl;
-	
-	commandbuffers_[current_frame_]->reset(vk::CommandBufferResetFlags());
-	
-	const float flash = std::abs(std::sin(total_frames_ / 120.f));
-	const auto clear_color = vk::ClearValue{}
-		.setColor({0.0f, 0.0f, flash, 1.0f});
-
-	RecordCommandbuffer(*(commandbuffers_[current_frame_]), imageIndex, clear_color);
-
-	const std::vector<vk::Semaphore> waitSemaphores{
-		*(imageAvailableSemaphores_[current_frame_]),
-	};
-	const std::vector<vk::Semaphore> signalSemaphores{
-		*(renderFinishedSemaphores_[current_frame_]),
-	};
-	
-	const std::vector<vk::PipelineStageFlags> waitStages{
-		vk::PipelineStageFlagBits::eColorAttachmentOutput,
-	};
-
-	auto submitInfo = vk::SubmitInfo{}
-		.setWaitSemaphores(waitSemaphores)
-		.setWaitDstStageMask(waitStages)
-		.setCommandBuffers(*(commandbuffers_[current_frame_]))
-		.setSignalSemaphores(signalSemaphores);
-	
-	::graphics_queue(index_queues_).submit(submitInfo, *(inFlightFences_[current_frame_]));
-
-	const std::vector<vk::SwapchainKHR> swapchains = {*swapchain_};
-	const std::vector<uint32_t> imageIndices = {imageIndex};
-	auto presentInfo = vk::PresentInfoKHR{}
-		.setSwapchains(swapchains)
-		.setImageIndices(imageIndices)
-		.setWaitSemaphores(signalSemaphores);
-	
-	auto presentResult = present_queue(index_queues_).presentKHR(presentInfo);
-	if (presentResult != vk::Result::eSuccess)
-		throw std::runtime_error("Could not wait for inFlightFence");
-
-    current_frame_ = (current_frame_ + 1) % maxFramesInFlight_;
-	total_frames_++;
-	
-	std::this_thread::sleep_for(std::chrono::milliseconds(500));
 }
