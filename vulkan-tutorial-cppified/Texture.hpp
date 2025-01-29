@@ -17,8 +17,7 @@ struct Texture
 	Texture(Texture&& texture);
 	Texture& operator=(Texture&& texture);
 
-	AllocatedImage image;
-	//vk::UniqueImageView view;
+	AllocatedImage allocated;
 	vk::Extent3D extent;
 	vk::Format format;
 	vk::ImageLayout layout;
@@ -27,14 +26,14 @@ struct Texture
 
 Texture::Texture(Texture&& rhs)
 {
-	std::swap(image, rhs.image);
+	std::swap(allocated, rhs.allocated);
 	std::swap(extent, rhs.extent);
 	std::swap(format, rhs.format);
 }
 
 Texture& Texture::operator=(Texture&& rhs)
 {
-	std::swap(image, rhs.image);
+	std::swap(allocated, rhs.allocated);
 	std::swap(extent, rhs.extent);
 	std::swap(format, rhs.format);
 	return *this;
@@ -60,7 +59,7 @@ copy_bitmap_to_gpu(vk::PhysicalDevice& physical_device,
 		.setHeight(bitmap.height)
 		.setDepth(1);
 
-	texture.image = allocate_image(physical_device,
+	texture.allocated = allocate_image(physical_device,
 								   device,
 								   texture.extent,
 								   texture.format,
@@ -72,11 +71,11 @@ copy_bitmap_to_gpu(vk::PhysicalDevice& physical_device,
 					   [&] (vk::CommandBuffer& commandbuffer)
 					   {
 						   texture.layout =
-							   transition_image_for_buffer_write(texture.image.image.get(),
+							   transition_image_for_buffer_write(texture.allocated.image.get(),
 																 commandbuffer);
 
 						   copy_buffer_to_image(staging.buffer.get(),
-												texture.image.image.get(),
+												texture.allocated.image.get(),
 												texture.extent.width,
 												texture.extent.height,
 												commandbuffer);
