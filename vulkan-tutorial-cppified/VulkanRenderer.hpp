@@ -60,7 +60,7 @@ private:
 	void CreateCommandpool();
 	void CreateCommandbuffers();
 	void CreateSyncObjects();
-	void CreateDrawTextures();
+	void CreateBlitTextures();
 
 	void RecordCommandbuffer(vk::CommandBuffer& commandbuffer,
 							 const uint32_t index,
@@ -90,8 +90,9 @@ private:
 	vk::UniquePipelineLayout pipelineLayout_;
     vk::Pipeline pipeline_;
 
-	Bitmap2D draw_image_;
-	std::vector<Texture> draw_textures_;
+	Texture draw_texture_;
+	std::vector<Texture> blit_textures_;
+
 	
 	std::vector<vk::UniqueFramebuffer> framebuffers_;
 	vk::UniqueCommandPool commandpool_;
@@ -156,7 +157,7 @@ VulkanRenderer::VulkanRenderer()
 	CreateCommandpool();
 	CreateCommandbuffers();
 	CreateSyncObjects();
-	CreateDrawTextures();
+	CreateBlitTextures();
 }
 
 void VulkanRenderer::CreateContext()
@@ -709,35 +710,23 @@ void VulkanRenderer::CreateFramebuffers()
 	std::cout << "> Created Framebuffer Count: " << framebuffers_.size() << std::endl;
 }
 
-void VulkanRenderer::CreateDrawTextures()
+void VulkanRenderer::CreateBlitTextures()
 {
-	Texture texture;
-	auto optbitmap = load_bitmap("../texture.jpg", BitmapPixelFormat::RGBA);
+	auto optbitmap = load_bitmap("../lulu.jpg", BitmapPixelFormat::RGBA);
 
 	//TODO: Here it would be nice to have a failsafe texture, that is an embedded bitmap
 	//      such as a simple checkerboard texture to notify that texture load failed.
 	//      Then using this failsafe we can write a load_bitmap_or function that 
 	//      guarantees return of a bitmap that can be used.
 	if (std::holds_alternative<Bitmap2D>(optbitmap)) {
-		draw_image_ = std::move(std::get<Bitmap2D>(optbitmap));
-	}
-	else if (std::holds_alternative<InvalidPath>(optbitmap)) {
-		std::cout << "Invalid path: " << std::get<InvalidPath>(optbitmap).path << std::endl;
-		throw std::runtime_error("Image failure");
-	}
-	else if (std::holds_alternative<LoadError>(optbitmap)) {
-		std::cout << "Load Error: " << std::get<LoadError>(optbitmap).why << std::endl;
-		throw std::runtime_error("Image failure");
-	}
+		draw_texture_ = copy_bitmap_to_gpu(physical_device(),
+										   device(),
+										   command_pool(),
+										   graphics_queue(),
+										   vk::MemoryPropertyFlagBits::eDeviceLocal,
+										   std::get<Bitmap2D>(optbitmap));
 	
-	for (size_t i = 0; i < swapchain_images_.size(); i++) {
-		Texture texture = copy_bitmap_to_gpu(physical_device(),
-											 device(),
-											 command_pool(),
-											 graphics_queue(),
-											 vk::MemoryPropertyFlagBits::eDeviceLocal,
-											 draw_image_);
-		
+		/*transfer the draw texture to a transferSrc layout for blitting*/
 		with_buffer_submit(device(),
 						   command_pool(),
 						   graphics_queue(),
@@ -753,7 +742,7 @@ void VulkanRenderer::CreateDrawTextures()
 							   auto barrier = vk::ImageMemoryBarrier{}
 								   .setOldLayout(vk::ImageLayout::eTransferDstOptimal)
 								   .setNewLayout(vk::ImageLayout::eTransferSrcOptimal)
-								   .setImage(texture.allocated.image.get())
+								   .setImage(draw_texture_.allocated.image.get())
 								   .setSubresourceRange(range)
 								   .setSrcAccessMask(vk::AccessFlagBits::eTransferWrite)
 								   .setDstAccessMask(vk::AccessFlagBits::eTransferWrite)
@@ -767,9 +756,44 @@ void VulkanRenderer::CreateDrawTextures()
 															 nullptr,
 															 barrier);
 						   });
+		draw_texture_.layout = vk::ImageLayout::eTransferSrcOptimal;
+
+	}
+	else if (std::holds_alternative<InvalidPath>(optbitmap)) {
+		std::cout << "Invalid path: " << std::get<InvalidPath>(optbitmap).path << std::endl;
+		throw std::runtime_error("Image failure");
+	}
+	else if (std::holds_alternative<LoadError>(optbitmap)) {
+		std::cout << "Load Error: " << std::get<LoadError>(optbitmap).why << std::endl;
+		throw std::runtime_error("Image failure");
+	}
+	
+	for (size_t i = 0; i < swapchain_images_.size(); i++) {
+		const auto window_extent = WindowExtent();
+		const auto extent = vk::Extent3D{}
+			.setWidth(window_extent.width)
+			.setHeight(window_extent.height)
+			.setDepth(1);
 		
-		texture.layout = vk::ImageLayout::eTransferSrcOptimal;
-		draw_textures_.push_back(std::move(texture));
+		Texture texture = create_empty_texture(physical_device(),
+											   device(),
+											   vk::Format::eR8G8B8A8Srgb,
+											   extent,
+											   vk::ImageTiling::eOptimal,
+											   vk::MemoryPropertyFlagBits::eDeviceLocal);
+
+		with_buffer_submit(device(),
+						   command_pool(),
+						   graphics_queue(),
+						   [&] (vk::CommandBuffer& commandbuffer)
+						   {
+							   texture.layout =
+								  transition_image_color_override(texture.allocated.image.get(),
+																  commandbuffer);
+
+						   });
+		
+		blit_textures_.push_back(std::move(texture));
 	}
 }
 
@@ -883,8 +907,6 @@ void VulkanRenderer::DrawFrame()
 
     current_frame_ = (current_frame_ + 1) % maxFramesInFlight_;
 	total_frames_++;
-	
-	std::this_thread::sleep_for(std::chrono::milliseconds(1000));
 }
 
 void VulkanRenderer::RecordCommandbuffer(vk::CommandBuffer& commandbuffer,
@@ -941,6 +963,7 @@ void VulkanRenderer::RecordCommandbuffer(vk::CommandBuffer& commandbuffer,
 https://github.com/googlesamples/vulkan-basic-samples/blob/master/API-Samples/copy_blit_image/copy_blit_image.cpp
 https://github.com/KhronosGroup/Vulkan-Hpp/blob/main/samples/CopyBlitImage/CopyBlitImage.cpp
 	 */
+	/** Transfer swapchain image layout to transferDst, without clearing original content*/
 	{
 		auto range = vk::ImageSubresourceRange{}
 			.setAspectMask(vk::ImageAspectFlagBits::eColor)
@@ -979,8 +1002,8 @@ https://github.com/KhronosGroup/Vulkan-Hpp/blob/main/samples/CopyBlitImage/CopyB
 			.setMipLevel(0);
 		const std::array<vk::Offset3D, 2> src_offsets{ 
 			vk::Offset3D(0, 0, 0),
-			vk::Offset3D(draw_textures_[index].extent.width,
-						 draw_textures_[index].extent.height,
+			vk::Offset3D(draw_texture_.extent.width,
+						 draw_texture_.extent.height,
 						 1)
 		};
 		
@@ -1001,7 +1024,7 @@ https://github.com/KhronosGroup/Vulkan-Hpp/blob/main/samples/CopyBlitImage/CopyB
 			.setDstOffsets(dst_offsets)
 			.setDstSubresource(dst_subresource);
 		
-		commandbuffer.blitImage(draw_textures_[index].allocated.image.get(),
+		commandbuffer.blitImage(draw_texture_.allocated.image.get(),
 								vk::ImageLayout::eTransferSrcOptimal,
 								swapchain_images_[index],
 								vk::ImageLayout::eTransferDstOptimal,

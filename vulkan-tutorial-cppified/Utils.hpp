@@ -582,49 +582,11 @@ image_subresource_range(const vk::ImageAspectFlags aspect_mask)
 }
 
 /**
-* Apparently this is a general-use layout transition method,
-* But note it is slower than methods that take actual StageMasks
-* into account.
-* https://vkguide.dev/docs/new_chapter_1/vulkan_mainloop_code/
-*
-* This method requires device extensions:
-*     VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME
-*     VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME
-*/
-#if 0
-void transition_image_with_barrier2(vk::Image& image,
-									const vk::ImageLayout old_layout,
-									const vk::ImageLayout new_layout,
-									vk::CommandBuffer& commandbuffer)
-{
-    const auto aspectMask = (new_layout == vk::ImageLayout::eDepthAttachmentOptimal)
-		? vk::ImageAspectFlagBits::eDepth
-		: vk::ImageAspectFlagBits::eColor;
-
-	auto barrier = vk::ImageMemoryBarrier2{}
-		.setOldLayout(old_layout)
-		.setNewLayout(new_layout)
-		.setSrcStageMask(vk::PipelineStageFlagBits2::eAllCommands)
-		.setSrcAccessMask(vk::AccessFlagBits2::eMemoryWrite)
-		.setDstStageMask(vk::PipelineStageFlagBits2::eAllCommands)
-		.setDstAccessMask(vk::AccessFlagBits2::eMemoryWrite
-						  | vk::AccessFlagBits2::eMemoryRead)
-		.setImage(image)
-		.setSubresourceRange(image_subresource_range(aspectMask));
-
-    auto depInfo = vk::DependencyInfo{}
-		.setImageMemoryBarriers(barrier);
-
-    commandbuffer.pipelineBarrier2(depInfo);
-}
-#endif
-
-/**
 * https://vkguide.dev/docs/chapter-5/loading_images/
 */
 vk::ImageLayout 
-transition_image_for_buffer_write(vk::Image& image,
-								  vk::CommandBuffer& commandbuffer)
+transition_image_color_override(vk::Image& image,
+								vk::CommandBuffer& commandbuffer)
 {
     auto range = vk::ImageSubresourceRange{}
 		.setAspectMask(vk::ImageAspectFlagBits::eColor)
@@ -648,115 +610,7 @@ transition_image_for_buffer_write(vk::Image& image,
 								  nullptr,
 								  barrier);
 
-
 	return vk::ImageLayout::eTransferDstOptimal;
-}
-
-vk::ImageLayout 
-transition_image_for_source_blit(vk::Image& image,
-								 const vk::ImageLayout old_layout,
-								 vk::CommandBuffer& commandbuffer)
-{
-    auto range = vk::ImageSubresourceRange{}
-		.setAspectMask(vk::ImageAspectFlagBits::eColor)
-		.setBaseMipLevel(0)
-		.setLevelCount(1)
-		.setBaseArrayLayer(0)
-		.setLayerCount(1);
-
-	auto barrier = vk::ImageMemoryBarrier{}
-		.setOldLayout(old_layout)
-		.setNewLayout(vk::ImageLayout::eTransferSrcOptimal)
-		.setImage(image)
-		.setSubresourceRange(range)
-		.setSrcAccessMask(vk::AccessFlags())
-		.setDstAccessMask(vk::AccessFlagBits::eTransferWrite);
-
-    commandbuffer.pipelineBarrier(vk::PipelineStageFlagBits::eHost,
-								  vk::PipelineStageFlagBits::eTransfer,
-								  vk::DependencyFlags(),
-								  nullptr,
-								  nullptr,
-								  barrier);
-
-
-	return vk::ImageLayout::eTransferSrcOptimal;
-}
-
-vk::ImageLayout 
-transition_image_for_destination_blit(vk::Image& image,
-									  const vk::ImageLayout old_layout,
-									  vk::CommandBuffer& commandbuffer)
-{
-    auto range = vk::ImageSubresourceRange{}
-		.setAspectMask(vk::ImageAspectFlagBits::eColor)
-		.setBaseMipLevel(0)
-		.setLevelCount(1)
-		.setBaseArrayLayer(0)
-		.setLayerCount(1);
-
-	auto barrier = vk::ImageMemoryBarrier{}
-		.setOldLayout(old_layout)
-		.setNewLayout(vk::ImageLayout::eTransferDstOptimal)
-		.setImage(image)
-		.setSubresourceRange(range)
-		.setSrcAccessMask(vk::AccessFlags())
-		.setDstAccessMask(vk::AccessFlagBits::eTransferWrite);
-
-    commandbuffer.pipelineBarrier(vk::PipelineStageFlagBits::eHost,
-								  vk::PipelineStageFlagBits::eTransfer,
-								  vk::DependencyFlags(),
-								  nullptr,
-								  nullptr,
-								  barrier);
-
-
-	return vk::ImageLayout::eTransferSrcOptimal;
-}
-
-vk::ImageLayout 
-transition_image_for_presentation(vk::Image& image,
-								  const vk::ImageLayout old_layout,
-								  vk::CommandBuffer& commandbuffer)
-{
-    auto range = vk::ImageSubresourceRange{}
-		.setAspectMask(vk::ImageAspectFlagBits::eColor)
-		.setBaseMipLevel(0)
-		.setLevelCount(1)
-		.setBaseArrayLayer(0)
-		.setLayerCount(1);
-
-	auto barrier = vk::ImageMemoryBarrier{}
-		.setOldLayout(old_layout)
-		.setNewLayout(vk::ImageLayout::ePresentSrcKHR)
-		.setImage(image)
-		.setSubresourceRange(range)
-		.setSrcAccessMask(vk::AccessFlagBits::eTransferWrite)
-		.setDstAccessMask(vk::AccessFlagBits::eMemoryRead);
-
-    commandbuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
-								  vk::PipelineStageFlagBits::eBottomOfPipe,
-								  vk::DependencyFlags(),
-								  nullptr,
-								  nullptr,
-								  barrier);
-
-	return vk::ImageLayout::ePresentSrcKHR;
-}
-
-void
-submit_transition_image_layout(vk::Device& device,
-							   vk::CommandPool& command_pool,
-							   vk::Queue& queue,
-							   vk::Image& image,
-							   vk::ImageLayout old_layout,
-							   vk::ImageLayout new_layout)
-{
-	with_buffer_submit(device, command_pool, queue,
-					   [&] (vk::CommandBuffer& commandbuffer)
-					   {
-						   transition_image_layout(image, old_layout, new_layout, commandbuffer);
-					   });
 }
 
 void
@@ -795,23 +649,6 @@ copy_buffer_to_image(vk::Buffer& buffer,
 									vk::ImageLayout::eTransferDstOptimal,
 									region);
 }
-
-void
-submit_copy_buffer_to_image(vk::Device& device,
-							vk::CommandPool& command_pool,
-							vk::Queue& queue,
-							vk::Buffer& buffer,
-							vk::Image& image,
-							const uint32_t width,
-							const uint32_t height)
-{
-	with_buffer_submit(device, command_pool, queue,
-						[&] (vk::CommandBuffer& commandbuffer)
-						{
-							copy_buffer_to_image(buffer, image, width, height, commandbuffer);
-						});
-}
-
 
 void
 blit_image_to_image(vk::Image& src,
@@ -855,20 +692,4 @@ blit_image_to_image(vk::Image& src,
 		.setFilter(vk::Filter::eLinear);
 	
 	commandbuffer.blitImage2(blit_info);
-}
-
-void
-submit_blit_image_to_image(vk::Device& device,
-						   vk::CommandPool& command_pool,
-						   vk::Queue& queue,
-						   vk::Image& src,
-						   vk::Image& dst,
-						   const vk::Extent2D src_size,
-						   const vk::Extent2D dst_size)
-{
-	with_buffer_submit(device, command_pool, queue,
-					   [&] (vk::CommandBuffer& commandbuffer)
-					   {
-						   blit_image_to_image(src, src_size, dst, dst_size, commandbuffer);
-					   });
 }

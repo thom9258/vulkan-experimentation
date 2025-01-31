@@ -40,6 +40,27 @@ Texture& Texture::operator=(Texture&& rhs)
 }
 
 Texture
+create_empty_texture(vk::PhysicalDevice& physical_device,
+					 vk::Device& device,
+					 const vk::Format format,
+					 const vk::Extent3D extent,
+					 const vk::ImageTiling tiling,
+					 const vk::MemoryPropertyFlags propertyFlags)
+{
+	Texture texture{};
+	texture.format = format;
+	texture.extent = extent;
+	texture.layout = vk::ImageLayout::eUndefined;
+	texture.allocated = allocate_image(physical_device,
+									   device,
+									   extent,
+									   format,
+									   tiling,
+									   propertyFlags);
+	return texture;
+}
+
+Texture
 copy_bitmap_to_gpu(vk::PhysicalDevice& physical_device,
 				   vk::Device& device,
 				   vk::CommandPool& command_pool,
@@ -51,28 +72,24 @@ copy_bitmap_to_gpu(vk::PhysicalDevice& physical_device,
 													device,
 													bitmap.pixels,
 													bitmap.memory_size());
-
-	Texture texture;
-	texture.format = vk::Format::eR8G8B8A8Srgb;
-	texture.extent = vk::Extent3D{}
+	const auto extent = vk::Extent3D{}
 		.setWidth(bitmap.width)
 		.setHeight(bitmap.height)
 		.setDepth(1);
 
-	texture.allocated = allocate_image(physical_device,
-								   device,
-								   texture.extent,
-								   texture.format,
-								   vk::ImageTiling::eOptimal,
-								   propertyFlags);
-	
+	Texture texture = create_empty_texture(physical_device,
+										   device,
+										   vk::Format::eR8G8B8A8Srgb,
+										   extent,
+										   vk::ImageTiling::eOptimal,
+										   propertyFlags);
 
 	with_buffer_submit(device, command_pool, queue,
 					   [&] (vk::CommandBuffer& commandbuffer)
 					   {
 						   texture.layout =
-							   transition_image_for_buffer_write(texture.allocated.image.get(),
-																 commandbuffer);
+							   transition_image_color_override(texture.allocated.image.get(),
+															   commandbuffer);
 
 						   copy_buffer_to_image(staging.buffer.get(),
 												texture.allocated.image.get(),
