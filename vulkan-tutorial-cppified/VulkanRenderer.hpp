@@ -24,6 +24,7 @@
 #include "Utils.hpp"
 #include "DebugMessenger.hpp"
 
+#include "Texture.hpp"
 
 constexpr std::string resources_root = "../resources";
 
@@ -37,6 +38,10 @@ public:
 	vk::Extent2D WindowExtent() const noexcept;
 	void DrawFrame();
 
+	vk::Device& device();
+	vk::PhysicalDevice& physical_device();
+	vk::CommandPool& command_pool();
+	vk::Queue& graphics_queue();
 	
 private:
 	void CreateContext();
@@ -55,9 +60,11 @@ private:
 	void CreateCommandpool();
 	void CreateCommandbuffers();
 	void CreateSyncObjects();
+	void CreateBlitTextures();
 
 	void RecordCommandbuffer(vk::CommandBuffer& commandbuffer,
-							 const uint32_t index);
+							 const uint32_t index,
+							 const vk::ClearValue clear_value);
 
 	const int maxFramesInFlight_ = 2;
 	uint32_t current_frame_{0};
@@ -82,16 +89,41 @@ private:
 	vk::UniqueRenderPass renderpass_;
 	vk::UniquePipelineLayout pipelineLayout_;
     vk::Pipeline pipeline_;
+
+	Texture draw_texture_;
+	std::vector<Texture> blit_textures_;
+
 	
 	std::vector<vk::UniqueFramebuffer> framebuffers_;
 	vk::UniqueCommandPool commandpool_;
 	std::vector<vk::UniqueCommandBuffer> commandbuffers_;
 	
+
 	std::vector<vk::UniqueSemaphore> imageAvailableSemaphores_;
 	std::vector<vk::UniqueSemaphore> renderFinishedSemaphores_;
 	std::vector<vk::UniqueFence> inFlightFences_;
 };
 
+
+vk::Device& VulkanRenderer::device()
+{
+	return device_.get();
+}
+
+vk::PhysicalDevice& VulkanRenderer::physical_device()
+{
+	return physical_device_;
+}
+
+vk::CommandPool& VulkanRenderer::command_pool()
+{
+	return commandpool_.get();
+}
+
+vk::Queue& VulkanRenderer::graphics_queue()
+{
+	return ::graphics_queue(index_queues_);
+}
 
 VulkanRenderer::~VulkanRenderer()
 {
@@ -125,6 +157,7 @@ VulkanRenderer::VulkanRenderer()
 	CreateCommandpool();
 	CreateCommandbuffers();
 	CreateSyncObjects();
+	CreateBlitTextures();
 }
 
 void VulkanRenderer::CreateContext()
@@ -378,8 +411,10 @@ void VulkanRenderer::CreateSwapChain()
 		.setImageColorSpace(swapchain_format_.colorSpace)
 		.setImageExtent(swapchain_extent)
 		.setImageArrayLayers(1)
-		.setImageUsage(vk::ImageUsageFlagBits::eColorAttachment)
-		//| vk::ImageUsageFlagBits::eTransferSrc)
+		.setImageUsage(vk::ImageUsageFlagBits::eColorAttachment
+					   //| vk::ImageUsageFlagBits::eTransferSrc
+					   | vk::ImageUsageFlagBits::eTransferDst
+					   | vk::ImageUsageFlagBits::eSampled)
 		.setClipped(true)
 		.setPreTransform(preTransform)
 		.setCompositeAlpha(compositeAlpha)
@@ -675,6 +710,93 @@ void VulkanRenderer::CreateFramebuffers()
 	std::cout << "> Created Framebuffer Count: " << framebuffers_.size() << std::endl;
 }
 
+void VulkanRenderer::CreateBlitTextures()
+{
+	auto optbitmap = load_bitmap("../lulu.jpg", BitmapPixelFormat::RGBA);
+
+	//TODO: Here it would be nice to have a failsafe texture, that is an embedded bitmap
+	//      such as a simple checkerboard texture to notify that texture load failed.
+	//      Then using this failsafe we can write a load_bitmap_or function that 
+	//      guarantees return of a bitmap that can be used.
+	if (std::holds_alternative<Bitmap2D>(optbitmap)) {
+		draw_texture_ = copy_bitmap_to_gpu(physical_device(),
+										   device(),
+										   command_pool(),
+										   graphics_queue(),
+										   vk::MemoryPropertyFlagBits::eDeviceLocal,
+										   std::get<Bitmap2D>(optbitmap));
+	
+		/*transfer the draw texture to a transferSrc layout for blitting*/
+		with_buffer_submit(device(),
+						   command_pool(),
+						   graphics_queue(),
+						   [&] (vk::CommandBuffer& commandbuffer)
+						   {
+							   auto range = vk::ImageSubresourceRange{}
+								   .setAspectMask(vk::ImageAspectFlagBits::eColor)
+								   .setBaseMipLevel(0)
+								   .setLevelCount(1)
+								   .setBaseArrayLayer(0)
+								   .setLayerCount(1);
+		
+							   auto barrier = vk::ImageMemoryBarrier{}
+								   .setOldLayout(vk::ImageLayout::eTransferDstOptimal)
+								   .setNewLayout(vk::ImageLayout::eTransferSrcOptimal)
+								   .setImage(draw_texture_.allocated.image.get())
+								   .setSubresourceRange(range)
+								   .setSrcAccessMask(vk::AccessFlagBits::eTransferWrite)
+								   .setDstAccessMask(vk::AccessFlagBits::eTransferWrite)
+								   .setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+								   .setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED);
+		
+							   commandbuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+															 vk::PipelineStageFlagBits::eTransfer,
+															 vk::DependencyFlags(),
+															 nullptr,
+															 nullptr,
+															 barrier);
+						   });
+		draw_texture_.layout = vk::ImageLayout::eTransferSrcOptimal;
+
+	}
+	else if (std::holds_alternative<InvalidPath>(optbitmap)) {
+		std::cout << "Invalid path: " << std::get<InvalidPath>(optbitmap).path << std::endl;
+		throw std::runtime_error("Image failure");
+	}
+	else if (std::holds_alternative<LoadError>(optbitmap)) {
+		std::cout << "Load Error: " << std::get<LoadError>(optbitmap).why << std::endl;
+		throw std::runtime_error("Image failure");
+	}
+	
+	for (size_t i = 0; i < swapchain_images_.size(); i++) {
+		const auto window_extent = WindowExtent();
+		const auto extent = vk::Extent3D{}
+			.setWidth(window_extent.width)
+			.setHeight(window_extent.height)
+			.setDepth(1);
+		
+		Texture texture = create_empty_texture(physical_device(),
+											   device(),
+											   vk::Format::eR8G8B8A8Srgb,
+											   extent,
+											   vk::ImageTiling::eOptimal,
+											   vk::MemoryPropertyFlagBits::eDeviceLocal);
+
+		with_buffer_submit(device(),
+						   command_pool(),
+						   graphics_queue(),
+						   [&] (vk::CommandBuffer& commandbuffer)
+						   {
+							   texture.layout =
+								  transition_image_color_override(texture.allocated.image.get(),
+																  commandbuffer);
+
+						   });
+		
+		blit_textures_.push_back(std::move(texture));
+	}
+}
+
 void VulkanRenderer::CreateCommandpool()
 {
     auto commandPoolCreateInfo = vk::CommandPoolCreateInfo{}
@@ -696,61 +818,6 @@ void VulkanRenderer::CreateCommandbuffers()
 
 	commandbuffers_ = device_->allocateCommandBuffersUnique(commandBufferAllocateInfo);
 	std::cout << "> Created " << commandbuffers_.size() << " Command buffers" << std::endl;
-}
-
-
-void VulkanRenderer::RecordCommandbuffer(vk::CommandBuffer& commandbuffer,
-										 const uint32_t index)
-{
-	const auto beginInfo = vk::CommandBufferBeginInfo{};
-	commandbuffer.begin(beginInfo);
-	
-	const auto window_extent = WindowExtent();
-	const auto renderArea = vk::Rect2D{}
-		.setExtent(window_extent)
-		.setOffset(vk::Offset2D{}.setX(0.0f)
-				                 .setY(0.0f));
-	
-	const auto clearColor = vk::ClearValue{}
-		.setColor({0.1f, 0.1f, 0.1f, 1.0f});
-	
-	const auto renderPassInfo = vk::RenderPassBeginInfo{}
-		.setRenderPass(*renderpass_)
-		.setFramebuffer(*framebuffers_[index])
-		.setRenderArea(renderArea)
-		.setClearValues(clearColor);
-
-	commandbuffer.beginRenderPass(renderPassInfo, vk::SubpassContents::eInline);
-	commandbuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline_);
-	
-	const std::vector<vk::Viewport> viewports{
-		vk::Viewport{}
-		.setX(0.0f)
-		.setY(0.0f)
-		.setWidth(window_extent.width)
-		.setHeight(window_extent.height)
-		.setMinDepth(0.0f)
-		.setMaxDepth(1.0f),
-	};
-	const uint32_t viewport_start = 0;
-	commandbuffer.setViewport(viewport_start, viewports);
-
-	const std::vector<vk::Rect2D> scissors{
-		vk::Rect2D{}
-		.setExtent(window_extent)
-		.setOffset(vk::Offset2D{}.setX(0.0f)
-				                 .setY(0.0f)),
-	};
-	const uint32_t scissor_start = 0;
-	commandbuffer.setScissor(scissor_start, scissors);
-
-    const uint32_t vertexCount = 3;
-    const uint32_t instanceCount = 1;
-    const uint32_t firstVertex = 0;
-    const uint32_t firstInstance = 0;
-	commandbuffer.draw(vertexCount, instanceCount, firstVertex, firstInstance);
-	commandbuffer.endRenderPass();
-	commandbuffer.end();
 }
 
 void VulkanRenderer::CreateSyncObjects()
@@ -791,15 +858,22 @@ void VulkanRenderer::DrawFrame()
 
 	assert(result == vk::Result::eSuccess);
 	assert(imageIndex < swapchain_imageviews_.size());
-	//const std::string line = ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>";
-	//std::cout << line 
-	//<< "\n > index:         " << imageIndex  
-	//<< "\n > current frame: " << current_frame_ 
-	//<< "\n > total frames:  " << total_frames_ 
-	//<< std::endl;
-	
+#if 0
+	const std::string line = ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>";
+	std::cout << line 
+			  << "\n > index:         " << imageIndex  
+			  << "\n > current frame: " << current_frame_ 
+			  << "\n > total frames:  " << total_frames_ 
+			  << std::endl;
+#endif	
+
 	commandbuffers_[current_frame_]->reset(vk::CommandBufferResetFlags());
-	RecordCommandbuffer(*(commandbuffers_[current_frame_]), imageIndex);
+	
+	const float flash = std::abs(std::sin(total_frames_ / 120.f));
+	const auto clear_color = vk::ClearValue{}
+		.setColor({0.0f, 0.0f, flash, 1.0f});
+
+	RecordCommandbuffer(*(commandbuffers_[current_frame_]), imageIndex, clear_color);
 
 	const std::vector<vk::Semaphore> waitSemaphores{
 		*(imageAvailableSemaphores_[current_frame_]),
@@ -818,7 +892,7 @@ void VulkanRenderer::DrawFrame()
 		.setCommandBuffers(*(commandbuffers_[current_frame_]))
 		.setSignalSemaphores(signalSemaphores);
 	
-	graphics_queue(index_queues_).submit(submitInfo, *(inFlightFences_[current_frame_]));
+	::graphics_queue(index_queues_).submit(submitInfo, *(inFlightFences_[current_frame_]));
 
 	const std::vector<vk::SwapchainKHR> swapchains = {*swapchain_};
 	const std::vector<uint32_t> imageIndices = {imageIndex};
@@ -833,4 +907,156 @@ void VulkanRenderer::DrawFrame()
 
     current_frame_ = (current_frame_ + 1) % maxFramesInFlight_;
 	total_frames_++;
+}
+
+void VulkanRenderer::RecordCommandbuffer(vk::CommandBuffer& commandbuffer,
+										 const uint32_t index,
+										 const vk::ClearValue clear_color)
+{
+	const auto beginInfo = vk::CommandBufferBeginInfo{};
+	commandbuffer.begin(beginInfo);
+	
+	const auto window_extent = WindowExtent();
+	const auto renderArea = vk::Rect2D{}
+		.setExtent(window_extent)
+		.setOffset(vk::Offset2D{}.setX(0.0f)
+				                 .setY(0.0f));
+	
+	const auto renderPassInfo = vk::RenderPassBeginInfo{}
+		.setRenderPass(*renderpass_)
+		.setFramebuffer(*framebuffers_[index])
+		.setRenderArea(renderArea)
+		.setClearValues(clear_color);
+
+	commandbuffer.beginRenderPass(renderPassInfo, vk::SubpassContents::eInline);
+	commandbuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline_);
+	
+	const std::vector<vk::Viewport> viewports{
+		vk::Viewport{}
+		.setX(0.0f)
+		.setY(0.0f)
+		.setWidth(window_extent.width)
+		.setHeight(window_extent.height)
+		.setMinDepth(0.0f)
+		.setMaxDepth(1.0f),
+	};
+	const uint32_t viewport_start = 0;
+	commandbuffer.setViewport(viewport_start, viewports);
+
+	const std::vector<vk::Rect2D> scissors{
+		vk::Rect2D{}
+		.setExtent(window_extent)
+		.setOffset(vk::Offset2D{}.setX(0.0f)
+				                 .setY(0.0f)),
+	};
+	const uint32_t scissor_start = 0;
+	commandbuffer.setScissor(scissor_start, scissors);
+
+    const uint32_t vertexCount = 3;
+    const uint32_t instanceCount = 1;
+    const uint32_t firstVertex = 0;
+    const uint32_t firstInstance = 0;
+	commandbuffer.draw(vertexCount, instanceCount, firstVertex, firstInstance);
+	commandbuffer.endRenderPass();
+	
+	/*
+https://github.com/googlesamples/vulkan-basic-samples/blob/master/API-Samples/copy_blit_image/copy_blit_image.cpp
+https://github.com/KhronosGroup/Vulkan-Hpp/blob/main/samples/CopyBlitImage/CopyBlitImage.cpp
+	 */
+	/** Transfer swapchain image layout to transferDst, without clearing original content*/
+	{
+		auto range = vk::ImageSubresourceRange{}
+			.setAspectMask(vk::ImageAspectFlagBits::eColor)
+			.setBaseMipLevel(0)
+			.setLevelCount(1)
+			.setBaseArrayLayer(0)
+			.setLayerCount(1);
+		
+		auto barrier = vk::ImageMemoryBarrier{}
+			// Usually it is faster to use eUndefined for old layout, as in most
+			// cases we do not care about previous data in the swapchain.
+			// here we however do, as we draw to it, so we explicitly specify ePresentSrc
+			.setOldLayout(vk::ImageLayout::ePresentSrcKHR)
+			.setNewLayout(vk::ImageLayout::eTransferDstOptimal)
+			.setImage(swapchain_images_[index])
+			.setSubresourceRange(range)
+			// source access flags is eNone because there are no access
+			// flags for synchronization with the presentation engine
+			.setSrcAccessMask(vk::AccessFlagBits::eNone)
+			.setDstAccessMask(vk::AccessFlagBits::eTransferWrite)
+			.setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+			.setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED);
+		
+		commandbuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+									  vk::PipelineStageFlagBits::eTransfer,
+									  vk::DependencyFlags(),
+									  nullptr,
+									  nullptr,
+									  barrier);
+	}
+	{
+		auto src_subresource = vk::ImageSubresourceLayers{}
+			.setAspectMask(vk::ImageAspectFlagBits::eColor)
+			.setBaseArrayLayer(0)
+			.setLayerCount(1)
+			.setMipLevel(0);
+		const std::array<vk::Offset3D, 2> src_offsets{ 
+			vk::Offset3D(0, 0, 0),
+			vk::Offset3D(draw_texture_.extent.width,
+						 draw_texture_.extent.height,
+						 1)
+		};
+		
+		auto dst_subresource = vk::ImageSubresourceLayers{}
+			.setAspectMask(vk::ImageAspectFlagBits::eColor)
+			.setBaseArrayLayer(0)
+			.setLayerCount(1)
+			.setMipLevel(0);
+		const auto window = WindowExtent();
+		const std::array<vk::Offset3D, 2> dst_offsets{ 
+			vk::Offset3D(0, 0, 0),
+			vk::Offset3D(window.width/2, window.height/2, 1)
+		};
+		
+		auto image_blit = vk::ImageBlit{}
+			.setSrcOffsets(src_offsets)
+			.setSrcSubresource(src_subresource)
+			.setDstOffsets(dst_offsets)
+			.setDstSubresource(dst_subresource);
+		
+		commandbuffer.blitImage(draw_texture_.allocated.image.get(),
+								vk::ImageLayout::eTransferSrcOptimal,
+								swapchain_images_[index],
+								vk::ImageLayout::eTransferDstOptimal,
+								image_blit,
+								vk::Filter::eLinear);
+	}
+	{
+		auto range = vk::ImageSubresourceRange{}
+			.setAspectMask(vk::ImageAspectFlagBits::eColor)
+			.setBaseMipLevel(0)
+			.setLevelCount(1)
+			.setBaseArrayLayer(0)
+			.setLayerCount(1);
+		
+		auto barrier = vk::ImageMemoryBarrier{}
+			.setOldLayout(vk::ImageLayout::eTransferDstOptimal)
+			.setNewLayout(vk::ImageLayout::ePresentSrcKHR)
+			.setImage(swapchain_images_[index])
+			.setSubresourceRange(range)
+			// are these access flags correct if layout is present??
+			.setSrcAccessMask(vk::AccessFlagBits::eTransferWrite)
+			.setDstAccessMask(vk::AccessFlagBits::eTransferRead)
+			.setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+			.setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED);
+		
+		commandbuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+									  vk::PipelineStageFlagBits::eTransfer,
+									  vk::DependencyFlags(),
+									  nullptr,
+									  nullptr,
+									  barrier);
+	}
+
+	commandbuffer.end();
 }

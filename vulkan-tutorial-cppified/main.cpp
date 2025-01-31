@@ -8,11 +8,10 @@
 
 #include "VulkanRenderer.hpp"
 
-
 int main()
 {
 	VulkanRenderer renderer{};
-
+	
 	/** ************************************************************************
 	 * Frame Loop
 	 */
@@ -57,6 +56,7 @@ int main()
 		 * Render Loop
 		 */
 		renderer.DrawFrame();
+		//std::this_thread::sleep_for(std::chrono::milliseconds(1000));
 	}
 	
 	return 0;
