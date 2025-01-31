@@ -54,11 +54,12 @@ private:
 	void CreateDevice();
 	void CreateIndexQueues();
 	void CreateSwapChain();
+	void CreateCommandpool();
+	void CreateCommandbuffers();
+	void CreateRenderTargets();
 	void CreateGraphicsPipeline();
 	void CreateRenderPass();
 	void CreateFramebuffers();
-	void CreateCommandpool();
-	void CreateCommandbuffers();
 	void CreateSyncObjects();
 	void CreateBlitTextures();
 
@@ -90,8 +91,9 @@ private:
 	vk::UniquePipelineLayout pipelineLayout_;
     vk::Pipeline pipeline_;
 
-	Texture draw_texture_;
-	std::vector<Texture> blit_textures_;
+	Texture2D draw_texture_;
+	std::vector<Texture2D> rendertargets_;
+	std::vector<vk::UniqueImageView> rendertarget_views_;
 
 	
 	std::vector<vk::UniqueFramebuffer> framebuffers_;
@@ -151,12 +153,15 @@ VulkanRenderer::VulkanRenderer()
 	CreateDevice();
 	CreateIndexQueues();
 	CreateSwapChain();
-	CreateRenderPass();
-	CreateGraphicsPipeline();
-	CreateFramebuffers();
 	CreateCommandpool();
 	CreateCommandbuffers();
 	CreateSyncObjects();
+
+	CreateRenderTargets();
+	CreateRenderPass();
+	CreateGraphicsPipeline();
+	CreateFramebuffers();
+
 	CreateBlitTextures();
 }
 
@@ -470,12 +475,49 @@ void VulkanRenderer::CreateSwapChain()
 	std::cout << "> created SwapChain!" << std::endl;
 }
 
+void VulkanRenderer::CreateRenderTargets()
+{
+	for (size_t i = 0; i < swapchain_images_.size(); i++) {
+		const auto window_extent = WindowExtent();
+		const auto extent = vk::Extent3D{}
+			.setWidth(window_extent.width)
+			.setHeight(window_extent.height)
+			.setDepth(1);
+		
+		Texture2D texture = create_empty_texture(physical_device(),
+												 device(),
+												 vk::Format::eR8G8B8A8Srgb,
+												 extent,
+												 vk::ImageTiling::eOptimal,
+												 vk::MemoryPropertyFlagBits::eDeviceLocal);
+
+		with_buffer_submit(device(),
+						   command_pool(),
+						   graphics_queue(),
+						   [&] (vk::CommandBuffer& commandbuffer)
+						   {
+							   texture.layout =
+								  transition_image_color_override(texture.allocated.image.get(),
+																  commandbuffer);
+
+						   });
+		
+		rendertargets_.push_back(std::move(texture));
+		auto view = create_texture_view(device(),
+										rendertargets_.back(),
+										vk::ImageAspectFlagBits::eColor);
+		rendertarget_views_.push_back(std::move(view));
+	}
+	std::cout << "> Created Render Targets" << std::endl;
+}
+
 void VulkanRenderer::CreateRenderPass()
 {
     const std::vector<vk::AttachmentDescription> attachmentDescriptions{
 		vk::AttachmentDescription{}
 		.setFlags(vk::AttachmentDescriptionFlags())
 		.setFormat(swapchain_format_.format)
+		//.setFormat(rendertargets_.front().format)
 		.setSamples(vk::SampleCountFlagBits::e1)
 		.setLoadOp(vk::AttachmentLoadOp::eClear)
 		.setStoreOp(vk::AttachmentStoreOp::eStore)
@@ -766,34 +808,6 @@ void VulkanRenderer::CreateBlitTextures()
 	else if (std::holds_alternative<LoadError>(optbitmap)) {
 		std::cout << "Load Error: " << std::get<LoadError>(optbitmap).why << std::endl;
 		throw std::runtime_error("Image failure");
-	}
-	
-	for (size_t i = 0; i < swapchain_images_.size(); i++) {
-		const auto window_extent = WindowExtent();
-		const auto extent = vk::Extent3D{}
-			.setWidth(window_extent.width)
-			.setHeight(window_extent.height)
-			.setDepth(1);
-		
-		Texture texture = create_empty_texture(physical_device(),
-											   device(),
-											   vk::Format::eR8G8B8A8Srgb,
-											   extent,
-											   vk::ImageTiling::eOptimal,
-											   vk::MemoryPropertyFlagBits::eDeviceLocal);
-
-		with_buffer_submit(device(),
-						   command_pool(),
-						   graphics_queue(),
-						   [&] (vk::CommandBuffer& commandbuffer)
-						   {
-							   texture.layout =
-								  transition_image_color_override(texture.allocated.image.get(),
-																  commandbuffer);
-
-						   });
-		
-		blit_textures_.push_back(std::move(texture));
 	}
 }
 

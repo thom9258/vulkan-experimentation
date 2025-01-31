@@ -6,16 +6,16 @@
 
 #include <iostream>
 	
-struct Texture
+struct Texture2D
 {
-	explicit Texture() = default;
-	~Texture() = default;
+	explicit Texture2D() = default;
+	~Texture2D() = default;
 
-	Texture(const Texture&) = delete;
-	Texture& operator=(const Texture&) = delete;
+	Texture2D(const Texture2D&) = delete;
+	Texture2D& operator=(const Texture2D&) = delete;
 
-	Texture(Texture&& texture);
-	Texture& operator=(Texture&& texture);
+	Texture2D(Texture2D&& texture);
+	Texture2D& operator=(Texture2D&& texture);
 
 	AllocatedImage allocated;
 	vk::Extent3D extent;
@@ -24,14 +24,14 @@ struct Texture
 };
 
 
-Texture::Texture(Texture&& rhs)
+Texture2D::Texture2D(Texture2D&& rhs)
 {
 	std::swap(allocated, rhs.allocated);
 	std::swap(extent, rhs.extent);
 	std::swap(format, rhs.format);
 }
 
-Texture& Texture::operator=(Texture&& rhs)
+Texture2D& Texture2D::operator=(Texture2D&& rhs)
 {
 	std::swap(allocated, rhs.allocated);
 	std::swap(extent, rhs.extent);
@@ -39,7 +39,7 @@ Texture& Texture::operator=(Texture&& rhs)
 	return *this;
 }
 
-Texture
+Texture2D
 create_empty_texture(vk::PhysicalDevice& physical_device,
 					 vk::Device& device,
 					 const vk::Format format,
@@ -47,7 +47,7 @@ create_empty_texture(vk::PhysicalDevice& physical_device,
 					 const vk::ImageTiling tiling,
 					 const vk::MemoryPropertyFlags propertyFlags)
 {
-	Texture texture{};
+	Texture2D texture{};
 	texture.format = format;
 	texture.extent = extent;
 	texture.layout = vk::ImageLayout::eUndefined;
@@ -60,7 +60,7 @@ create_empty_texture(vk::PhysicalDevice& physical_device,
 	return texture;
 }
 
-Texture
+Texture2D
 copy_bitmap_to_gpu(vk::PhysicalDevice& physical_device,
 				   vk::Device& device,
 				   vk::CommandPool& command_pool,
@@ -77,7 +77,7 @@ copy_bitmap_to_gpu(vk::PhysicalDevice& physical_device,
 		.setHeight(bitmap.height)
 		.setDepth(1);
 
-	Texture texture = create_empty_texture(physical_device,
+	Texture2D texture = create_empty_texture(physical_device,
 										   device,
 										   vk::Format::eR8G8B8A8Srgb,
 										   extent,
@@ -98,4 +98,32 @@ copy_bitmap_to_gpu(vk::PhysicalDevice& physical_device,
 												commandbuffer);
 					   });
 	return texture;
+}
+
+vk::UniqueImageView
+create_texture_view(vk::Device& device,
+					Texture2D& texture,
+					const vk::ImageAspectFlags aspect)
+{
+	const auto subresourceRange = vk::ImageSubresourceRange{}
+		.setAspectMask(aspect)
+		.setBaseMipLevel(0)
+		.setLevelCount(1)
+		.setBaseArrayLayer(0)
+		.setLayerCount(1);
+
+	const auto componentMapping = vk::ComponentMapping{}
+		.setR(vk::ComponentSwizzle::eIdentity)		
+		.setG(vk::ComponentSwizzle::eIdentity)
+		.setB(vk::ComponentSwizzle::eIdentity)
+		.setA(vk::ComponentSwizzle::eIdentity);
+
+	const auto imageViewCreateInfo = vk::ImageViewCreateInfo{}
+		.setImage(texture.allocated.image.get())
+		.setFormat(texture.format)
+		.setSubresourceRange(subresourceRange)
+		.setViewType(vk::ImageViewType::e2D)
+		.setComponents(componentMapping);
+
+	return device.createImageViewUnique(imageViewCreateInfo);
 }
