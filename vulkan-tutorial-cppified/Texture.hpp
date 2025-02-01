@@ -23,6 +23,11 @@ struct Texture2D
 	vk::ImageLayout layout;
 };
 
+vk::Image&
+get_image(Texture2D& texture)
+{
+	return get_image(texture.allocated);
+}
 
 Texture2D::Texture2D(Texture2D&& rhs)
 {
@@ -56,7 +61,35 @@ create_empty_texture(vk::PhysicalDevice& physical_device,
 									   extent,
 									   format,
 									   tiling,
-									   propertyFlags);
+									   propertyFlags,
+									   vk::ImageUsageFlagBits::eTransferDst
+									   | vk::ImageUsageFlagBits::eTransferSrc
+									   | vk::ImageUsageFlagBits::eSampled);
+	return texture;
+}
+
+Texture2D
+create_empty_rendertarget_texture(vk::PhysicalDevice& physical_device,
+								  vk::Device& device,
+								  const vk::Format format,
+								  const vk::Extent3D extent,
+								  const vk::ImageTiling tiling,
+								  const vk::MemoryPropertyFlags propertyFlags)
+{
+	Texture2D texture{};
+	texture.format = format;
+	texture.extent = extent;
+	texture.layout = vk::ImageLayout::eUndefined;
+	texture.allocated = allocate_image(physical_device,
+									   device,
+									   extent,
+									   format,
+									   tiling,
+									   propertyFlags,
+									   vk::ImageUsageFlagBits::eTransferDst
+									   | vk::ImageUsageFlagBits::eTransferSrc
+									   | vk::ImageUsageFlagBits::eSampled
+									   | vk::ImageUsageFlagBits::eColorAttachment);
 	return texture;
 }
 
@@ -88,11 +121,11 @@ copy_bitmap_to_gpu(vk::PhysicalDevice& physical_device,
 					   [&] (vk::CommandBuffer& commandbuffer)
 					   {
 						   texture.layout =
-							   transition_image_color_override(texture.allocated.image.get(),
+							   transition_image_color_override(get_image(texture),
 															   commandbuffer);
 
 						   copy_buffer_to_image(staging.buffer.get(),
-												texture.allocated.image.get(),
+												get_image(texture),
 												texture.extent.width,
 												texture.extent.height,
 												commandbuffer);
@@ -119,7 +152,7 @@ create_texture_view(vk::Device& device,
 		.setA(vk::ComponentSwizzle::eIdentity);
 
 	const auto imageViewCreateInfo = vk::ImageViewCreateInfo{}
-		.setImage(texture.allocated.image.get())
+		.setImage(get_image(texture))
 		.setFormat(texture.format)
 		.setSubresourceRange(subresourceRange)
 		.setViewType(vk::ImageViewType::e2D)
