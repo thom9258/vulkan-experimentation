@@ -42,7 +42,8 @@ int main()
 				switch (wev.event) {
 				case SDL_WINDOWEVENT_RESIZED:
 				case SDL_WINDOWEVENT_SIZE_CHANGED:
-					// DO RESIZE
+					renderer.window_resize_event_triggered();
+					//TODO: DO RESIZE
 					break;
 				case SDL_WINDOWEVENT_CLOSE:
 					exit = true;
@@ -55,7 +56,7 @@ int main()
 		/** ************************************************************************
 		 * Render Loop
 		 */
-		renderer.DrawFrame();
+		renderer.draw_frame();
 		//std::this_thread::sleep_for(std::chrono::milliseconds(1000));
 	}
 	

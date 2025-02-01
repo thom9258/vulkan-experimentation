@@ -35,8 +35,9 @@ public:
     ~VulkanRenderer(); 
 
 	[[nodiscard]]
-	vk::Extent2D WindowExtent() const noexcept;
-	void DrawFrame();
+	vk::Extent2D get_window_extent() const noexcept;
+	vk::Extent2D window_resize_event_triggered() noexcept;
+	void draw_frame();
 
 	vk::Device& device();
 	vk::PhysicalDevice& physical_device();
@@ -322,8 +323,8 @@ void VulkanRenderer::CreateIndexQueues()
 }
 
 
-[[nodiscard]]
-vk::Extent2D VulkanRenderer::WindowExtent() const noexcept
+vk::Extent2D
+VulkanRenderer::get_window_extent() const noexcept
 {
 	int width;
 	int height;
@@ -331,12 +332,19 @@ vk::Extent2D VulkanRenderer::WindowExtent() const noexcept
 	return vk::Extent2D{}.setWidth(width).setHeight(height);
 }
 
+vk::Extent2D 
+VulkanRenderer::window_resize_event_triggered() noexcept
+{
+	//TODO: Implement resize of swapchain
+	return get_window_extent();
+}
+
 void VulkanRenderer::CreateSwapChain()
 {
 	const auto surface_capabilities =
 		physical_device_.getSurfaceCapabilitiesKHR(raw_window_surface_);
 
-	const auto window_extent = WindowExtent();
+	const auto window_extent = get_window_extent();
 	std::cout << "> Window width:  " << window_extent.width << "\n"
 			  << "         height: " << window_extent.height << std::endl;
 
@@ -417,7 +425,7 @@ void VulkanRenderer::CreateSwapChain()
 		.setImageExtent(swapchain_extent)
 		.setImageArrayLayers(1)
 		.setImageUsage(vk::ImageUsageFlagBits::eColorAttachment
-					   //| vk::ImageUsageFlagBits::eTransferSrc
+					   | vk::ImageUsageFlagBits::eTransferSrc
 					   | vk::ImageUsageFlagBits::eTransferDst
 					   | vk::ImageUsageFlagBits::eSampled)
 		.setClipped(true)
@@ -478,18 +486,19 @@ void VulkanRenderer::CreateSwapChain()
 void VulkanRenderer::CreateRenderTargets()
 {
 	for (size_t i = 0; i < swapchain_images_.size(); i++) {
-		const auto window_extent = WindowExtent();
+		const auto window_extent = get_window_extent();
 		const auto extent = vk::Extent3D{}
 			.setWidth(window_extent.width)
 			.setHeight(window_extent.height)
 			.setDepth(1);
 		
-		Texture2D texture = create_empty_texture(physical_device(),
-												 device(),
-												 vk::Format::eR8G8B8A8Srgb,
-												 extent,
-												 vk::ImageTiling::eOptimal,
-												 vk::MemoryPropertyFlagBits::eDeviceLocal);
+		Texture2D texture =
+			create_empty_rendertarget_texture(physical_device(),
+											  device(),
+											  vk::Format::eR8G8B8A8Srgb,
+											  extent,
+											  vk::ImageTiling::eOptimal,
+											  vk::MemoryPropertyFlagBits::eDeviceLocal);
 
 		with_buffer_submit(device(),
 						   command_pool(),
@@ -497,7 +506,7 @@ void VulkanRenderer::CreateRenderTargets()
 						   [&] (vk::CommandBuffer& commandbuffer)
 						   {
 							   texture.layout =
-								  transition_image_color_override(texture.allocated.image.get(),
+								  transition_image_color_override(get_image(texture),
 																  commandbuffer);
 
 						   });
@@ -513,19 +522,25 @@ void VulkanRenderer::CreateRenderTargets()
 
 void VulkanRenderer::CreateRenderPass()
 {
-    const std::vector<vk::AttachmentDescription> attachmentDescriptions{
+    const std::array<vk::AttachmentDescription, 1> attachments{
 		vk::AttachmentDescription{}
 		.setFlags(vk::AttachmentDescriptionFlags())
-		.setFormat(swapchain_format_.format)
-		//.setFormat(rendertargets_.front().format)
+		.setFormat(rendertargets_.front().format)
 		.setSamples(vk::SampleCountFlagBits::e1)
 		.setLoadOp(vk::AttachmentLoadOp::eClear)
 		.setStoreOp(vk::AttachmentStoreOp::eStore)
 		.setStencilLoadOp(vk::AttachmentLoadOp::eDontCare)
 		.setStencilStoreOp(vk::AttachmentStoreOp::eDontCare)
+		// NOTE these are important, as they determine the layout of the image before and after
 		.setInitialLayout(vk::ImageLayout::eUndefined)
-		.setFinalLayout(vk::ImageLayout::ePresentSrcKHR),
+		.setFinalLayout(vk::ImageLayout::eTransferDstOptimal),
 	};
+	std::cout 
+		<< "> RenderPass setup:\n"
+		<< "> \tInitialLayout: " << vk::to_string(attachments[0].initialLayout) << "\n"
+		<< "> \tFinalLayout:   " << vk::to_string(attachments[0].finalLayout) << "\n"
+		<< "> \tFormat:        " << vk::to_string(attachments[0].format) << "\n"
+		<< std::endl;
 
 	auto colorReference = vk::AttachmentReference{}
 		.setAttachment(0)
@@ -550,7 +565,7 @@ void VulkanRenderer::CreateRenderPass()
 	
     auto renderPassCreateInfo = vk::RenderPassCreateInfo{}
 		.setFlags(vk::RenderPassCreateFlags())
-		.setAttachments(attachmentDescriptions)
+		.setAttachments(attachments)
 		.setDependencies(dependency)
 		.setSubpasses(subpass);
 
@@ -616,7 +631,7 @@ void VulkanRenderer::CreateGraphicsPipeline()
 		.setPrimitiveRestartEnable(vk::False)
 		.setTopology(vk::PrimitiveTopology::eTriangleList);
 	
-	const auto window_extent = WindowExtent();
+	const auto window_extent = get_window_extent();
 	
 	vk::Viewport default_viewport{};
 	default_viewport
@@ -627,22 +642,10 @@ void VulkanRenderer::CreateGraphicsPipeline()
 		.setMinDepth(0.0f)
 		.setMaxDepth(1.0f);
 	
-	std::cout << "> wiewport width:     " << default_viewport.width << "\n"
-			  << "           height:    " << default_viewport.height << "\n"
-			  << "           x:         " << default_viewport.x << "\n"
-			  << "           y:         " << default_viewport.y << "\n"
-			  << "           min depth: " << default_viewport.minDepth << "\n"
-			  << "           max depth: " << default_viewport.maxDepth
-			  << std::endl;
-
-	
-	auto default_scissor  = vk::Rect2D{}
+	auto default_scissor = vk::Rect2D{}
 		.setOffset(vk::Offset2D{}.setX(0.0f)
 				                 .setY(0.0f));
 
-
-	std::cout << "> scissor x: " << default_scissor.offset.x << "\n"
-			  << "          y: " << default_scissor.offset.y << std::endl;
 
     auto pipelineViewportStateCreateInfo = vk::PipelineViewportStateCreateInfo{}
 		.setFlags(vk::PipelineViewportStateCreateFlags())
@@ -733,20 +736,18 @@ void VulkanRenderer::CreateGraphicsPipeline()
 
 void VulkanRenderer::CreateFramebuffers()
 {
-	const auto window_extent = WindowExtent();
-	framebuffers_.resize(swapchain_imageviews_.size());
-	for (size_t i = 0; i < swapchain_imageviews_.size(); i++) {
-		std::array<vk::ImageView, 1> framebuffer_attachments{
-			*(swapchain_imageviews_[i]),
+	for (size_t i = 0; i < rendertarget_views_.size(); i++) {
+		std::array<vk::ImageView, 1> attachments{
+			rendertarget_views_[i].get(),
 		};
 		auto framebufferCreateInfo = vk::FramebufferCreateInfo{}
 			.setFlags(vk::FramebufferCreateFlags())
-			.setAttachments(framebuffer_attachments)
-			.setWidth(window_extent.width)
-			.setHeight(window_extent.height)
+			.setAttachments(attachments)
+			.setWidth(rendertargets_[i].extent.width)
+			.setHeight(rendertargets_[i].extent.height)
 			.setRenderPass(*renderpass_)
 			.setLayers(1);
-      framebuffers_[i] = device_->createFramebufferUnique(framebufferCreateInfo);
+      framebuffers_.push_back(device_->createFramebufferUnique(framebufferCreateInfo));
 	}
 	
 	std::cout << "> Created Framebuffer Count: " << framebuffers_.size() << std::endl;
@@ -784,7 +785,7 @@ void VulkanRenderer::CreateBlitTextures()
 							   auto barrier = vk::ImageMemoryBarrier{}
 								   .setOldLayout(vk::ImageLayout::eTransferDstOptimal)
 								   .setNewLayout(vk::ImageLayout::eTransferSrcOptimal)
-								   .setImage(draw_texture_.allocated.image.get())
+								   .setImage(get_image(draw_texture_))
 								   .setSubresourceRange(range)
 								   .setSrcAccessMask(vk::AccessFlagBits::eTransferWrite)
 								   .setDstAccessMask(vk::AccessFlagBits::eTransferWrite)
@@ -854,7 +855,7 @@ void VulkanRenderer::CreateSyncObjects()
 	std::cout << "> Created Sync Objects" << std::endl;
 }
 
-void VulkanRenderer::DrawFrame()
+void VulkanRenderer::draw_frame()
 {
 	const auto maxTimeout = std::numeric_limits<unsigned int>::max();
 	auto waitresult = device_->waitForFences(*(inFlightFences_[current_frame_]),
@@ -930,7 +931,7 @@ void VulkanRenderer::RecordCommandbuffer(vk::CommandBuffer& commandbuffer,
 	const auto beginInfo = vk::CommandBufferBeginInfo{};
 	commandbuffer.begin(beginInfo);
 	
-	const auto window_extent = WindowExtent();
+	const auto window_extent = get_window_extent();
 	const auto renderArea = vk::Rect2D{}
 		.setExtent(window_extent)
 		.setOffset(vk::Offset2D{}.setX(0.0f)
@@ -957,9 +958,13 @@ void VulkanRenderer::RecordCommandbuffer(vk::CommandBuffer& commandbuffer,
 	const uint32_t viewport_start = 0;
 	commandbuffer.setViewport(viewport_start, viewports);
 
+	auto extent = vk::Extent2D{}
+		.setWidth(rendertargets_[index].extent.width)
+		.setHeight(rendertargets_[index].extent.height);
+
 	const std::vector<vk::Rect2D> scissors{
 		vk::Rect2D{}
-		.setExtent(window_extent)
+		.setExtent(extent)
 		.setOffset(vk::Offset2D{}.setX(0.0f)
 				                 .setY(0.0f)),
 	};
@@ -973,12 +978,26 @@ void VulkanRenderer::RecordCommandbuffer(vk::CommandBuffer& commandbuffer,
 	commandbuffer.draw(vertexCount, instanceCount, firstVertex, firstInstance);
 	commandbuffer.endRenderPass();
 	
-	/*
-https://github.com/googlesamples/vulkan-basic-samples/blob/master/API-Samples/copy_blit_image/copy_blit_image.cpp
-https://github.com/KhronosGroup/Vulkan-Hpp/blob/main/samples/CopyBlitImage/CopyBlitImage.cpp
-	 */
-	/** Transfer swapchain image layout to transferDst, without clearing original content*/
+	const bool debug_print{false};
+
+	auto printImageBarrierTransition = [&] (const std::string name, 
+											const vk::ImageMemoryBarrier& barrier)
 	{
+		if (!debug_print)
+			return;
+		std::cout << "Transfered " << name << " from " 
+				  << vk::to_string(barrier.oldLayout) << " to "
+				  << vk::to_string(barrier.newLayout) << "\n"
+				  << "=======================================" 
+				  << std::endl;
+	};
+
+	if (debug_print) {
+		std::cout << "=======================================" << std::endl;
+		std::cout << "=======================================" << std::endl;
+	}
+	
+	if (true) {
 		auto range = vk::ImageSubresourceRange{}
 			.setAspectMask(vk::ImageAspectFlagBits::eColor)
 			.setBaseMipLevel(0)
@@ -987,17 +1006,12 @@ https://github.com/KhronosGroup/Vulkan-Hpp/blob/main/samples/CopyBlitImage/CopyB
 			.setLayerCount(1);
 		
 		auto barrier = vk::ImageMemoryBarrier{}
-			// Usually it is faster to use eUndefined for old layout, as in most
-			// cases we do not care about previous data in the swapchain.
-			// here we however do, as we draw to it, so we explicitly specify ePresentSrc
-			.setOldLayout(vk::ImageLayout::ePresentSrcKHR)
-			.setNewLayout(vk::ImageLayout::eTransferDstOptimal)
 			.setImage(swapchain_images_[index])
 			.setSubresourceRange(range)
-			// source access flags is eNone because there are no access
-			// flags for synchronization with the presentation engine
-			.setSrcAccessMask(vk::AccessFlagBits::eNone)
-			.setDstAccessMask(vk::AccessFlagBits::eTransferWrite)
+			.setOldLayout(vk::ImageLayout::eUndefined)
+			.setNewLayout(vk::ImageLayout::eTransferDstOptimal)
+			.setSrcAccessMask(vk::AccessFlagBits::eTransferRead)
+			.setDstAccessMask(vk::AccessFlags())
 			.setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
 			.setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED);
 		
@@ -1007,8 +1021,11 @@ https://github.com/KhronosGroup/Vulkan-Hpp/blob/main/samples/CopyBlitImage/CopyB
 									  nullptr,
 									  nullptr,
 									  barrier);
+
+		printImageBarrierTransition("SwapChain image", barrier);
 	}
-	{
+
+	if (true) {
 		auto src_subresource = vk::ImageSubresourceLayers{}
 			.setAspectMask(vk::ImageAspectFlagBits::eColor)
 			.setBaseArrayLayer(0)
@@ -1026,10 +1043,12 @@ https://github.com/KhronosGroup/Vulkan-Hpp/blob/main/samples/CopyBlitImage/CopyB
 			.setBaseArrayLayer(0)
 			.setLayerCount(1)
 			.setMipLevel(0);
-		const auto window = WindowExtent();
+		const auto window_extent = get_window_extent();
 		const std::array<vk::Offset3D, 2> dst_offsets{ 
 			vk::Offset3D(0, 0, 0),
-			vk::Offset3D(window.width/2, window.height/2, 1)
+			vk::Offset3D(window_extent.width / 2,
+						 window_extent.height / 2,
+						 1)
 		};
 		
 		auto image_blit = vk::ImageBlit{}
@@ -1038,14 +1057,19 @@ https://github.com/KhronosGroup/Vulkan-Hpp/blob/main/samples/CopyBlitImage/CopyB
 			.setDstOffsets(dst_offsets)
 			.setDstSubresource(dst_subresource);
 		
-		commandbuffer.blitImage(draw_texture_.allocated.image.get(),
+		commandbuffer.blitImage(get_image(draw_texture_),
 								vk::ImageLayout::eTransferSrcOptimal,
-								swapchain_images_[index],
+								get_image(rendertargets_[index]),
 								vk::ImageLayout::eTransferDstOptimal,
 								image_blit,
 								vk::Filter::eLinear);
+		if (debug_print) {
+			std::cout << "Blitted draw texture to rendertexture" << std::endl;
+			std::cout << "=======================================" << std::endl;
+		}
 	}
-	{
+
+	if (true) {
 		auto range = vk::ImageSubresourceRange{}
 			.setAspectMask(vk::ImageAspectFlagBits::eColor)
 			.setBaseMipLevel(0)
@@ -1055,10 +1079,78 @@ https://github.com/KhronosGroup/Vulkan-Hpp/blob/main/samples/CopyBlitImage/CopyB
 		
 		auto barrier = vk::ImageMemoryBarrier{}
 			.setOldLayout(vk::ImageLayout::eTransferDstOptimal)
-			.setNewLayout(vk::ImageLayout::ePresentSrcKHR)
+			.setNewLayout(vk::ImageLayout::eTransferSrcOptimal)
+			.setImage(get_image(rendertargets_[index]))
+			.setSubresourceRange(range)
+			.setSrcAccessMask(vk::AccessFlagBits::eTransferRead)
+			.setDstAccessMask(vk::AccessFlagBits::eTransferWrite)
+			.setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+			.setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED);
+		
+		commandbuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+									  vk::PipelineStageFlagBits::eTransfer,
+									  vk::DependencyFlags(),
+									  nullptr,
+									  nullptr,
+									  barrier);
+
+		printImageBarrierTransition("RenderImage", barrier);
+	}
+
+	if (true) {
+		auto src_subresource = vk::ImageSubresourceLayers{}
+			.setAspectMask(vk::ImageAspectFlagBits::eColor)
+			.setBaseArrayLayer(0)
+			.setLayerCount(1)
+			.setMipLevel(0);
+		const std::array<vk::Offset3D, 2> src_offsets{ 
+			vk::Offset3D(0, 0, 0),
+			vk::Offset3D(rendertargets_[index].extent.width,
+						 rendertargets_[index].extent.height,
+						 1)
+		};
+		
+		auto dst_subresource = vk::ImageSubresourceLayers{}
+			.setAspectMask(vk::ImageAspectFlagBits::eColor)
+			.setBaseArrayLayer(0)
+			.setLayerCount(1)
+			.setMipLevel(0);
+		const auto window_extent = get_window_extent();
+		const std::array<vk::Offset3D, 2> dst_offsets{ 
+			vk::Offset3D(0, 0, 0),
+			vk::Offset3D(window_extent.width, window_extent.height, 1)
+		};
+		
+		auto image_blit = vk::ImageBlit{}
+			.setSrcOffsets(src_offsets)
+			.setSrcSubresource(src_subresource)
+			.setDstOffsets(dst_offsets)
+			.setDstSubresource(dst_subresource);
+		
+		commandbuffer.blitImage(get_image(rendertargets_[index]),
+								vk::ImageLayout::eTransferSrcOptimal,
+								swapchain_images_[index],
+								vk::ImageLayout::eTransferDstOptimal,
+								image_blit,
+								vk::Filter::eLinear);
+		if (debug_print) {
+			std::cout << "Blitted rendertexture to swapchain image" << std::endl;
+			std::cout << "=======================================" << std::endl;
+		}
+	}
+	if (true) {
+		auto range = vk::ImageSubresourceRange{}
+			.setAspectMask(vk::ImageAspectFlagBits::eColor)
+			.setBaseMipLevel(0)
+			.setLevelCount(1)
+			.setBaseArrayLayer(0)
+			.setLayerCount(1);
+		
+		auto barrier = vk::ImageMemoryBarrier{}
 			.setImage(swapchain_images_[index])
 			.setSubresourceRange(range)
-			// are these access flags correct if layout is present??
+			.setOldLayout(vk::ImageLayout::eTransferDstOptimal)
+			.setNewLayout(vk::ImageLayout::ePresentSrcKHR)
 			.setSrcAccessMask(vk::AccessFlagBits::eTransferWrite)
 			.setDstAccessMask(vk::AccessFlagBits::eTransferRead)
 			.setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
@@ -1070,6 +1162,8 @@ https://github.com/KhronosGroup/Vulkan-Hpp/blob/main/samples/CopyBlitImage/CopyB
 									  nullptr,
 									  nullptr,
 									  barrier);
+
+		printImageBarrierTransition("SwapChain Image", barrier);
 	}
 
 	commandbuffer.end();
