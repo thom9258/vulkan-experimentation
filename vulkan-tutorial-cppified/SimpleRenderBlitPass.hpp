@@ -12,6 +12,7 @@ struct SimpleRenderBlitFramePass
 
 struct SimpleRenderBlitPass
 {
+	bool debug_print;
 	Texture2D draw_texture;
 	vk::UniqueRenderPass renderpass;
 	vk::UniquePipelineLayout pipeline_layout;
@@ -28,7 +29,6 @@ generate_next_frame(SimpleRenderBlitPass& pass,
 					vk::CommandPool& command_pool,
 					vk::Queue& queue)
 {
-	const bool debug_print = true;
 	SimpleRenderBlitFramePass& frame_pass = pass.frame_passes[current_frame_in_flight];
 
 	const auto render_extent = vk::Extent2D{}
@@ -80,7 +80,7 @@ generate_next_frame(SimpleRenderBlitPass& pass,
 		commandbuffer.draw(vertexCount, instanceCount, firstVertex, firstInstance);
 		commandbuffer.endRenderPass();
 
-		if (debug_print) {
+		if (pass.debug_print) {
 			std::cout << "Pass: rendered to rendertarget" << std::endl;
 			std::cout << "=======================================" << std::endl;
 		}
@@ -121,7 +121,7 @@ generate_next_frame(SimpleRenderBlitPass& pass,
 									vk::ImageLayout::eTransferDstOptimal,
 									image_blit,
 									vk::Filter::eLinear);
-			if (debug_print) {
+			if (pass.debug_print) {
 				std::cout << "Pass: Blitted draw_texture to rendertarget" << std::endl;
 				std::cout << "=======================================" << std::endl;
 			}
@@ -152,7 +152,7 @@ generate_next_frame(SimpleRenderBlitPass& pass,
 										  nullptr,
 										  barrier);
 			
-			if (debug_print) {
+			if (pass.debug_print) {
 				std::cout << "Pass: Transfered rendertarget from TransferDst to TransferSrc" 
 						  << std::endl;
 				std::cout << "=======================================" << std::endl;
@@ -189,6 +189,7 @@ create_simple_render_blit_pass(vk::PhysicalDevice& physical_device,
 
 
 	SimpleRenderBlitPass render_blit_pass;
+	render_blit_pass.debug_print = false;
 	render_blit_pass.draw_texture = std::move(draw_texture);
 	
 

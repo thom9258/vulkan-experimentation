@@ -78,11 +78,10 @@ private:
 							 const uint32_t index,
 							 const vk::ClearValue clear_value);
 	
-
-	vk::CommandBuffer&
-	RecordBlitTextureToSwapchain(const uint32_t current_frame_in_flight,
-								 Texture2D* texture,
-								 const bool debug_print);
+	void RecordBlitTextureToSwapchain(vk::CommandBuffer& commandbuffer,
+									  vk::Image& swapchain_image,
+									  Texture2D* texture,
+									  const bool debug_print);
 
 	const int maxFramesInFlight_ = 2;
 	uint32_t current_frame_in_flight_{0};
@@ -1185,8 +1184,9 @@ void VulkanRenderer::RecordCommandbuffer(vk::CommandBuffer& commandbuffer,
 	commandbuffer.end();
 }
 
-vk::CommandBuffer&
-VulkanRenderer::RecordBlitTextureToSwapchain(const uint32_t current_frame_in_flight,
+void
+VulkanRenderer::RecordBlitTextureToSwapchain(vk::CommandBuffer& commandbuffer,
+											 vk::Image& swapchain_image,
 											 Texture2D* texture,
 											 const bool debug_print)
 {
@@ -1206,9 +1206,6 @@ VulkanRenderer::RecordBlitTextureToSwapchain(const uint32_t current_frame_in_fli
 		std::cout << "=======================================" << std::endl;
 		std::cout << "=======================================" << std::endl;
 	}
-	
-	vk::CommandBuffer& commandbuffer = commandbuffers_[current_frame_in_flight].get();
-	vk::Image& swapchain_image = swapchain_images_[current_frame_in_flight];
 	
 	commandbuffer.reset(vk::CommandBufferResetFlags());
 	const auto beginInfo = vk::CommandBufferBeginInfo{};
@@ -1311,7 +1308,6 @@ VulkanRenderer::RecordBlitTextureToSwapchain(const uint32_t current_frame_in_fli
 	}
 
 	commandbuffer.end();
-	return commandbuffer;
 }
 	
 
@@ -1353,9 +1349,10 @@ void VulkanRenderer::with_presentation(FrameGenerator& currentFrameGenerator)
 		throw std::runtime_error("SwapChain has not implemented a way to present the old"
 								 " swapchain image if generator returns nullopt");
 	
-	RecordBlitTextureToSwapchain(current_frame_in_flight_,
+	RecordBlitTextureToSwapchain(commandbuffers_[current_frame_in_flight_].get(),
+								 swapchain_images_[swapchain_index],
 								 frameToPresent.value(),
-								 true);
+								 false);
 
 	const std::vector<vk::Semaphore> waitSemaphores{
 		*(imageAvailableSemaphores_[current_frame_in_flight_]),
