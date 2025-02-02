@@ -14,8 +14,8 @@ struct Texture2D
 	Texture2D(const Texture2D&) = delete;
 	Texture2D& operator=(const Texture2D&) = delete;
 
-	Texture2D(Texture2D&& texture);
-	Texture2D& operator=(Texture2D&& texture);
+	Texture2D(Texture2D&& texture) noexcept;
+	Texture2D& operator=(Texture2D&& texture) noexcept;
 
 	AllocatedImage allocated;
 	vk::Extent3D extent;
@@ -23,25 +23,27 @@ struct Texture2D
 	vk::ImageLayout layout;
 };
 
+Texture2D::Texture2D(Texture2D&& rhs) noexcept
+{
+	std::swap(allocated, rhs.allocated);
+	std::swap(extent, rhs.extent);
+	std::swap(format, rhs.format);
+	std::swap(layout, rhs.layout);
+}
+
+Texture2D& Texture2D::operator=(Texture2D&& rhs) noexcept
+{
+	std::swap(allocated, rhs.allocated);
+	std::swap(extent, rhs.extent);
+	std::swap(format, rhs.format);
+	std::swap(layout, rhs.layout);
+	return *this;
+}
+
 vk::Image&
 get_image(Texture2D& texture)
 {
 	return get_image(texture.allocated);
-}
-
-Texture2D::Texture2D(Texture2D&& rhs)
-{
-	std::swap(allocated, rhs.allocated);
-	std::swap(extent, rhs.extent);
-	std::swap(format, rhs.format);
-}
-
-Texture2D& Texture2D::operator=(Texture2D&& rhs)
-{
-	std::swap(allocated, rhs.allocated);
-	std::swap(extent, rhs.extent);
-	std::swap(format, rhs.format);
-	return *this;
 }
 
 Texture2D
@@ -50,7 +52,8 @@ create_empty_texture(vk::PhysicalDevice& physical_device,
 					 const vk::Format format,
 					 const vk::Extent3D extent,
 					 const vk::ImageTiling tiling,
-					 const vk::MemoryPropertyFlags propertyFlags)
+					 const vk::MemoryPropertyFlags propertyFlags,
+					 const vk::ImageUsageFlags usageFlags)
 {
 	Texture2D texture{};
 	texture.format = format;
@@ -62,10 +65,27 @@ create_empty_texture(vk::PhysicalDevice& physical_device,
 									   format,
 									   tiling,
 									   propertyFlags,
-									   vk::ImageUsageFlagBits::eTransferDst
-									   | vk::ImageUsageFlagBits::eTransferSrc
-									   | vk::ImageUsageFlagBits::eSampled);
+									   usageFlags);
 	return texture;
+}
+
+Texture2D
+create_empty_general_texture(vk::PhysicalDevice& physical_device,
+							 vk::Device& device,
+							 const vk::Format format,
+							 const vk::Extent3D extent,
+							 const vk::ImageTiling tiling,
+							 const vk::MemoryPropertyFlags propertyFlags)
+{
+	return create_empty_texture(physical_device,
+								device,
+								format,
+								extent,
+								tiling,
+								propertyFlags,
+								vk::ImageUsageFlagBits::eTransferDst
+								| vk::ImageUsageFlagBits::eTransferSrc
+								| vk::ImageUsageFlagBits::eSampled);
 }
 
 Texture2D
@@ -76,21 +96,16 @@ create_empty_rendertarget_texture(vk::PhysicalDevice& physical_device,
 								  const vk::ImageTiling tiling,
 								  const vk::MemoryPropertyFlags propertyFlags)
 {
-	Texture2D texture{};
-	texture.format = format;
-	texture.extent = extent;
-	texture.layout = vk::ImageLayout::eUndefined;
-	texture.allocated = allocate_image(physical_device,
-									   device,
-									   extent,
-									   format,
-									   tiling,
-									   propertyFlags,
-									   vk::ImageUsageFlagBits::eTransferDst
-									   | vk::ImageUsageFlagBits::eTransferSrc
-									   | vk::ImageUsageFlagBits::eSampled
-									   | vk::ImageUsageFlagBits::eColorAttachment);
-	return texture;
+	return create_empty_texture(physical_device,
+								device,
+								format,
+								extent,
+								tiling,
+								propertyFlags,
+								vk::ImageUsageFlagBits::eTransferDst
+								| vk::ImageUsageFlagBits::eTransferSrc
+								| vk::ImageUsageFlagBits::eSampled
+								| vk::ImageUsageFlagBits::eColorAttachment);
 }
 
 Texture2D
@@ -110,12 +125,12 @@ copy_bitmap_to_gpu(vk::PhysicalDevice& physical_device,
 		.setHeight(bitmap.height)
 		.setDepth(1);
 
-	Texture2D texture = create_empty_texture(physical_device,
-										   device,
-										   vk::Format::eR8G8B8A8Srgb,
-										   extent,
-										   vk::ImageTiling::eOptimal,
-										   propertyFlags);
+	Texture2D texture = create_empty_general_texture(physical_device,
+													 device,
+													 vk::Format::eR8G8B8A8Srgb,
+													 extent,
+													 vk::ImageTiling::eOptimal,
+													 propertyFlags);
 
 	with_buffer_submit(device, command_pool, queue,
 					   [&] (vk::CommandBuffer& commandbuffer)
