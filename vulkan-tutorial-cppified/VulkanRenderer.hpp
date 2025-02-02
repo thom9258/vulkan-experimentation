@@ -8,6 +8,7 @@
 #include <chrono>
 #include <thread>
 #include <limits>
+#include <optional>
 
 
 //#define VULKAN_HPP_NO_STRUCT_CONSTRUCTORS
@@ -28,16 +29,25 @@
 
 constexpr std::string resources_root = "../resources";
 
+
+struct CurrentFrameInfo
+{
+	uint64_t total_frame_count;
+	uint64_t current_flight_frame_index;
+};
+
+using FrameGenerator = std::function<std::optional<Texture2D*>(CurrentFrameInfo)>;
+
 class VulkanRenderer 
 {
 public:
-    explicit VulkanRenderer();
+    explicit VulkanRenderer(const uint32_t frames_in_flight);
     ~VulkanRenderer(); 
 
-	[[nodiscard]]
 	vk::Extent2D get_window_extent() const noexcept;
 	vk::Extent2D window_resize_event_triggered() noexcept;
 	void draw_frame();
+	void with_presentation(FrameGenerator& f);
 
 	vk::Device& device();
 	vk::PhysicalDevice& physical_device();
@@ -67,10 +77,16 @@ private:
 	void RecordCommandbuffer(vk::CommandBuffer& commandbuffer,
 							 const uint32_t index,
 							 const vk::ClearValue clear_value);
+	
+
+	vk::CommandBuffer&
+	RecordBlitTextureToSwapchain(const uint32_t current_frame_in_flight,
+								 Texture2D* texture,
+								 const bool debug_print);
 
 	const int maxFramesInFlight_ = 2;
-	uint32_t current_frame_{0};
-	uint32_t total_frames_{0};
+	uint32_t current_frame_in_flight_{0};
+	uint64_t total_frames_{0};
 
 	SDL_Window* window_;
 	vk::UniqueInstance instance_;
@@ -85,26 +101,24 @@ private:
 
 	vk::SurfaceFormatKHR swapchain_format_;
 	vk::UniqueSwapchainKHR swapchain_;
+	vk::UniqueCommandPool commandpool_;
+
 	std::vector<vk::Image> swapchain_images_;
 	std::vector<vk::UniqueImageView> swapchain_imageviews_;
-
-	vk::UniqueRenderPass renderpass_;
-	vk::UniquePipelineLayout pipelineLayout_;
-    vk::Pipeline pipeline_;
-
-	Texture2D draw_texture_;
-	std::vector<Texture2D> rendertargets_;
-	std::vector<vk::UniqueImageView> rendertarget_views_;
-
-	
-	std::vector<vk::UniqueFramebuffer> framebuffers_;
-	vk::UniqueCommandPool commandpool_;
 	std::vector<vk::UniqueCommandBuffer> commandbuffers_;
-	
-
 	std::vector<vk::UniqueSemaphore> imageAvailableSemaphores_;
 	std::vector<vk::UniqueSemaphore> renderFinishedSemaphores_;
 	std::vector<vk::UniqueFence> inFlightFences_;
+	
+
+	//NOTE MOVED TO SimpleRenderBlitPass
+	vk::UniqueRenderPass renderpass_;
+	vk::UniquePipelineLayout pipelineLayout_;
+    vk::Pipeline pipeline_;
+	Texture2D draw_texture_;
+	std::vector<Texture2D> rendertargets_;
+	std::vector<vk::UniqueImageView> rendertarget_views_;
+	std::vector<vk::UniqueFramebuffer> framebuffers_;
 };
 
 
@@ -142,7 +156,8 @@ VulkanRenderer::~VulkanRenderer()
 	SDL_Quit();
 }
 
-VulkanRenderer::VulkanRenderer()
+VulkanRenderer::VulkanRenderer(const uint32_t frames_in_flight)
+	: maxFramesInFlight_(frames_in_flight)
 {
 	CreateContext();
 	CreateWindow();
@@ -858,10 +873,10 @@ void VulkanRenderer::CreateSyncObjects()
 void VulkanRenderer::draw_frame()
 {
 	const auto maxTimeout = std::numeric_limits<unsigned int>::max();
-	auto waitresult = device_->waitForFences(*(inFlightFences_[current_frame_]),
+	auto waitresult = device_->waitForFences(*(inFlightFences_[current_frame_in_flight_]),
 										 true,
 										 maxTimeout);
-	device_->resetFences(*(inFlightFences_[current_frame_]));
+	device_->resetFences(*(inFlightFences_[current_frame_in_flight_]));
 
 	if (waitresult != vk::Result::eSuccess)
 		throw std::runtime_error("Could not wait for inFlightFence");
@@ -869,7 +884,7 @@ void VulkanRenderer::draw_frame()
 	auto [result, imageIndex] =
 		device_->acquireNextImageKHR(*swapchain_,
 									 maxTimeout,
-									 *(imageAvailableSemaphores_[current_frame_]));
+									 *(imageAvailableSemaphores_[current_frame_in_flight_]));
 
 	assert(result == vk::Result::eSuccess);
 	assert(imageIndex < swapchain_imageviews_.size());
@@ -882,19 +897,19 @@ void VulkanRenderer::draw_frame()
 			  << std::endl;
 #endif	
 
-	commandbuffers_[current_frame_]->reset(vk::CommandBufferResetFlags());
+	commandbuffers_[current_frame_in_flight_]->reset(vk::CommandBufferResetFlags());
 	
 	const float flash = std::abs(std::sin(total_frames_ / 120.f));
 	const auto clear_color = vk::ClearValue{}
 		.setColor({0.0f, 0.0f, flash, 1.0f});
 
-	RecordCommandbuffer(*(commandbuffers_[current_frame_]), imageIndex, clear_color);
+	RecordCommandbuffer(*(commandbuffers_[current_frame_in_flight_]), imageIndex, clear_color);
 
 	const std::vector<vk::Semaphore> waitSemaphores{
-		*(imageAvailableSemaphores_[current_frame_]),
+		*(imageAvailableSemaphores_[current_frame_in_flight_]),
 	};
 	const std::vector<vk::Semaphore> signalSemaphores{
-		*(renderFinishedSemaphores_[current_frame_]),
+		*(renderFinishedSemaphores_[current_frame_in_flight_]),
 	};
 	
 	const std::vector<vk::PipelineStageFlags> waitStages{
@@ -904,10 +919,11 @@ void VulkanRenderer::draw_frame()
 	auto submitInfo = vk::SubmitInfo{}
 		.setWaitSemaphores(waitSemaphores)
 		.setWaitDstStageMask(waitStages)
-		.setCommandBuffers(*(commandbuffers_[current_frame_]))
+		.setCommandBuffers(*(commandbuffers_[current_frame_in_flight_]))
 		.setSignalSemaphores(signalSemaphores);
 	
-	::graphics_queue(index_queues_).submit(submitInfo, *(inFlightFences_[current_frame_]));
+	::graphics_queue(index_queues_).submit(submitInfo,
+										   *(inFlightFences_[current_frame_in_flight_]));
 
 	const std::vector<vk::SwapchainKHR> swapchains = {*swapchain_};
 	const std::vector<uint32_t> imageIndices = {imageIndex};
@@ -920,7 +936,7 @@ void VulkanRenderer::draw_frame()
 	if (presentResult != vk::Result::eSuccess)
 		throw std::runtime_error("Could not wait for inFlightFence");
 
-    current_frame_ = (current_frame_ + 1) % maxFramesInFlight_;
+    current_frame_in_flight_ = (current_frame_in_flight_ + 1) % maxFramesInFlight_;
 	total_frames_++;
 }
 
@@ -1167,4 +1183,211 @@ void VulkanRenderer::RecordCommandbuffer(vk::CommandBuffer& commandbuffer,
 	}
 
 	commandbuffer.end();
+}
+
+vk::CommandBuffer&
+VulkanRenderer::RecordBlitTextureToSwapchain(const uint32_t current_frame_in_flight,
+											 Texture2D* texture,
+											 const bool debug_print)
+{
+	auto printImageBarrierTransition = [&] (const std::string name, 
+											const vk::ImageMemoryBarrier& barrier)
+	{
+		if (!debug_print)
+			return;
+		std::cout << "Transfered " << name << " from " 
+				  << vk::to_string(barrier.oldLayout) << " to "
+				  << vk::to_string(barrier.newLayout) << "\n"
+				  << "=======================================" 
+				  << std::endl;
+	};
+
+	if (debug_print) {
+		std::cout << "=======================================" << std::endl;
+		std::cout << "=======================================" << std::endl;
+	}
+	
+	vk::CommandBuffer& commandbuffer = commandbuffers_[current_frame_in_flight].get();
+	vk::Image& swapchain_image = swapchain_images_[current_frame_in_flight];
+	
+	commandbuffer.reset(vk::CommandBufferResetFlags());
+	const auto beginInfo = vk::CommandBufferBeginInfo{};
+	commandbuffer.begin(beginInfo);
+
+	if (true) {
+		auto range = vk::ImageSubresourceRange{}
+			.setAspectMask(vk::ImageAspectFlagBits::eColor)
+			.setBaseMipLevel(0)
+			.setLevelCount(1)
+			.setBaseArrayLayer(0)
+			.setLayerCount(1);
+		
+		auto barrier = vk::ImageMemoryBarrier{}
+			.setImage(swapchain_image)
+			.setSubresourceRange(range)
+			.setOldLayout(vk::ImageLayout::eUndefined)
+			.setNewLayout(vk::ImageLayout::eTransferDstOptimal)
+			.setSrcAccessMask(vk::AccessFlagBits::eTransferRead)
+			.setDstAccessMask(vk::AccessFlags())
+			.setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+			.setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED);
+		
+		commandbuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+									  vk::PipelineStageFlagBits::eTransfer,
+									  vk::DependencyFlags(),
+									  nullptr,
+									  nullptr,
+									  barrier);
+
+		printImageBarrierTransition("SwapChain image", barrier);
+	}
+	if (true) {
+		auto src_subresource = vk::ImageSubresourceLayers{}
+			.setAspectMask(vk::ImageAspectFlagBits::eColor)
+			.setBaseArrayLayer(0)
+			.setLayerCount(1)
+			.setMipLevel(0);
+		const std::array<vk::Offset3D, 2> src_offsets{ 
+			vk::Offset3D(0, 0, 0),
+			vk::Offset3D(texture->extent.width,
+						 texture->extent.height,
+						 1)
+		};
+		
+		auto dst_subresource = vk::ImageSubresourceLayers{}
+			.setAspectMask(vk::ImageAspectFlagBits::eColor)
+			.setBaseArrayLayer(0)
+			.setLayerCount(1)
+			.setMipLevel(0);
+		const auto window_extent = get_window_extent();
+		const std::array<vk::Offset3D, 2> dst_offsets{ 
+			vk::Offset3D(0, 0, 0),
+			vk::Offset3D(window_extent.width, window_extent.height, 1)
+		};
+		
+		auto image_blit = vk::ImageBlit{}
+			.setSrcOffsets(src_offsets)
+			.setSrcSubresource(src_subresource)
+			.setDstOffsets(dst_offsets)
+			.setDstSubresource(dst_subresource);
+		
+		commandbuffer.blitImage(get_image(*texture),
+								vk::ImageLayout::eTransferSrcOptimal,
+								swapchain_image,
+								vk::ImageLayout::eTransferDstOptimal,
+								image_blit,
+								vk::Filter::eLinear);
+		if (debug_print) {
+			std::cout << "Blitted rendertexture to swapchain image" << std::endl;
+			std::cout << "=======================================" << std::endl;
+		}
+	}
+	if (true) {
+		auto range = vk::ImageSubresourceRange{}
+			.setAspectMask(vk::ImageAspectFlagBits::eColor)
+			.setBaseMipLevel(0)
+			.setLevelCount(1)
+			.setBaseArrayLayer(0)
+			.setLayerCount(1);
+		
+		auto barrier = vk::ImageMemoryBarrier{}
+			.setImage(swapchain_image)
+			.setSubresourceRange(range)
+			.setOldLayout(vk::ImageLayout::eTransferDstOptimal)
+			.setNewLayout(vk::ImageLayout::ePresentSrcKHR)
+			.setSrcAccessMask(vk::AccessFlagBits::eTransferWrite)
+			.setDstAccessMask(vk::AccessFlagBits::eTransferRead)
+			.setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+			.setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED);
+		
+		commandbuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+									  vk::PipelineStageFlagBits::eTransfer,
+									  vk::DependencyFlags(),
+									  nullptr,
+									  nullptr,
+									  barrier);
+
+		printImageBarrierTransition("SwapChain Image", barrier);
+	}
+
+	commandbuffer.end();
+	return commandbuffer;
+}
+	
+
+void VulkanRenderer::with_presentation(FrameGenerator& currentFrameGenerator)
+{
+
+	const auto maxTimeout = std::numeric_limits<unsigned int>::max();
+	auto waitresult = device_->waitForFences(*(inFlightFences_[current_frame_in_flight_]),
+										 true,
+										 maxTimeout);
+	device_->resetFences(*(inFlightFences_[current_frame_in_flight_]));
+
+	if (waitresult != vk::Result::eSuccess)
+		throw std::runtime_error("Could not wait for inFlightFence");
+	
+	auto [result, swapchain_index] =
+		device_->acquireNextImageKHR(*swapchain_,
+									 maxTimeout,
+									 *(imageAvailableSemaphores_[current_frame_in_flight_]));
+
+	assert(result == vk::Result::eSuccess);
+	assert(swapchain_index < swapchain_imageviews_.size());
+#if 1
+	const std::string line = ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>";
+	std::cout << line 
+			  << "\n> present flight index:    " << current_frame_in_flight_
+			  << "\n> present swapchain index: " << swapchain_index 
+			  << "\n> present total frames:    " << total_frames_ 
+			  << std::endl;
+#endif	
+	
+	CurrentFrameInfo currentFrameInfo;
+	currentFrameInfo.current_flight_frame_index = current_frame_in_flight_;
+	currentFrameInfo.total_frame_count = total_frames_;
+
+	std::optional<Texture2D*> frameToPresent = std::invoke(currentFrameGenerator,
+														   currentFrameInfo);
+	if (!frameToPresent.has_value())
+		throw std::runtime_error("SwapChain has not implemented a way to present the old"
+								 " swapchain image if generator returns nullopt");
+	
+	RecordBlitTextureToSwapchain(current_frame_in_flight_,
+								 frameToPresent.value(),
+								 true);
+
+	const std::vector<vk::Semaphore> waitSemaphores{
+		*(imageAvailableSemaphores_[current_frame_in_flight_]),
+	};
+	const std::vector<vk::Semaphore> signalSemaphores{
+		*(renderFinishedSemaphores_[current_frame_in_flight_]),
+	};
+	
+	const std::vector<vk::PipelineStageFlags> waitStages{
+		vk::PipelineStageFlagBits::eColorAttachmentOutput,
+	};
+
+	auto submitInfo = vk::SubmitInfo{}
+		.setWaitSemaphores(waitSemaphores)
+		.setWaitDstStageMask(waitStages)
+		.setCommandBuffers(*(commandbuffers_[current_frame_in_flight_]))
+		.setSignalSemaphores(signalSemaphores);
+	
+	::present_queue(index_queues_).submit(submitInfo,
+										  *(inFlightFences_[current_frame_in_flight_]));
+
+	const std::vector<vk::SwapchainKHR> swapchains = {*swapchain_};
+	const std::vector<uint32_t> imageIndices = {swapchain_index};
+	auto presentInfo = vk::PresentInfoKHR{}
+		.setSwapchains(swapchains)
+		.setImageIndices(imageIndices)
+		.setWaitSemaphores(signalSemaphores);
+	
+	auto presentResult = present_queue(index_queues_).presentKHR(presentInfo);
+	if (presentResult != vk::Result::eSuccess)
+		throw std::runtime_error("Could not wait for inFlightFence");
+
+    current_frame_in_flight_ = (current_frame_in_flight_ + 1) % maxFramesInFlight_;
+	total_frames_++;
 }
