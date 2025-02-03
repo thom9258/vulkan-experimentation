@@ -12,7 +12,7 @@
 
 template <typename F, typename... Args>
 std::chrono::duration<double>
-measure_time(F&& f, Args&&... args)
+with_time_measurement(F&& f, Args&&... args)
 {
 	using Clock = std::chrono::high_resolution_clock;
 	auto start = Clock::now();
@@ -21,25 +21,24 @@ measure_time(F&& f, Args&&... args)
 	return end - start;
 }
 
-
 int main()
 {
-	VulkanRenderer renderer(2);
+	PresentationContext presentor(2);
 
 	auto optbitmap = load_bitmap("../lulu.jpg", BitmapPixelFormat::RGBA);
 	Texture2D blit_texture;
 	if (std::holds_alternative<Bitmap2D>(optbitmap)) {
-		blit_texture = copy_bitmap_to_gpu(renderer.physical_device(),
-										  renderer.device(),
-										  renderer.command_pool(),
-										  renderer.graphics_queue(),
+		blit_texture = copy_bitmap_to_gpu(presentor.physical_device,
+										  presentor.device.get(),
+										  presentor.command_pool(),
+										  presentor.graphics_queue(),
 										  vk::MemoryPropertyFlagBits::eDeviceLocal,
 										  std::get<Bitmap2D>(optbitmap));
 	
 		/*transfer the draw texture to a transferSrc layout for blitting*/
-		with_buffer_submit(renderer.device(),
-						   renderer.command_pool(),
-						   renderer.graphics_queue(),
+		with_buffer_submit(presentor.device.get(),
+						   presentor.command_pool(),
+						   presentor.graphics_queue(),
 						   [&] (vk::CommandBuffer& commandbuffer)
 						   {
 							   auto range = vk::ImageSubresourceRange{}
@@ -85,12 +84,12 @@ int main()
 
 	
 	SimpleRenderBlitPass render_blit_pass = 
-		create_simple_render_blit_pass(renderer.physical_device(),
-									   renderer.device(),
-									   renderer.command_pool(),
-									   renderer.graphics_queue(),
+		create_simple_render_blit_pass(presentor.physical_device,
+									   presentor.device.get(),
+									   presentor.command_pool(),
+									   presentor.graphics_queue(),
 									   std::move(blit_texture),
-									   renderer.get_window_extent(),
+									   presentor.get_window_extent(),
 									   2,
 									   resources_root + "/triangle.vert.spv",
 									   resources_root + "/triangle.frag.spv"
@@ -103,7 +102,7 @@ int main()
 	bool exit = false;
 
 	while (!exit) {
-		auto frame_time = measure_time([&] () {
+		auto frame_time = with_time_measurement([&] () {
 			/** ************************************************************************
 			 * Handle Inputs
 			 */
@@ -127,7 +126,7 @@ int main()
 					switch (wev.event) {
 					case SDL_WINDOWEVENT_RESIZED:
 					case SDL_WINDOWEVENT_SIZE_CHANGED:
-						renderer.window_resize_event_triggered();
+						presentor.window_resize_event_triggered();
 						//TODO: DO RESIZE
 						break;
 					case SDL_WINDOWEVENT_CLOSE:
@@ -141,22 +140,22 @@ int main()
 			/** ************************************************************************
 			 * Render Loop
 			 */
-			FrameGenerator frameGenerator = [&] (CurrentFrameInfo frameInfo)
+			FrameProducer frameGenerator = [&] (CurrentFrameInfo frameInfo)
 				-> std::optional<Texture2D*>
 				{
 					auto textureptr = generate_next_frame(render_blit_pass,
 														  frameInfo.current_flight_frame_index,
 														  frameInfo.total_frame_count,
-														  renderer.device(),
-														  renderer.command_pool(),
-														  renderer.graphics_queue());
+														  presentor.device.get(),
+														  presentor.command_pool(),
+														  presentor.graphics_queue());
 					
 					if (textureptr == nullptr)
 						return std::nullopt;
 					return textureptr;
 				};
 			
-			renderer.with_presentation(frameGenerator);
+			presentor.with_presentation(frameGenerator);
 		});
 
 		//std::this_thread::sleep_for(std::chrono::milliseconds(1000));
@@ -166,5 +165,7 @@ int main()
 		std::cout << "Frame Time [ms]: " << frame_time_ms.count() << std::endl;
 	}
 	
+	presentor.device.get().waitIdle();
+
 	return 0;
 }

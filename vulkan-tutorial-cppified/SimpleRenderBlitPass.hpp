@@ -20,7 +20,6 @@ struct SimpleRenderBlitPass
 	std::vector<SimpleRenderBlitFramePass> frame_passes;
 };
 
-
 Texture2D*
 generate_next_frame(SimpleRenderBlitPass& pass,
 					const uint32_t current_frame_in_flight,
