@@ -80,8 +80,9 @@ private:
 	
 	void RecordBlitTextureToSwapchain(vk::CommandBuffer& commandbuffer,
 									  vk::Image& swapchain_image,
-									  Texture2D* texture,
-									  const bool debug_print);
+									  Texture2D* texture);
+
+	const bool per_frame_debug_print{false};
 
 	const int maxFramesInFlight_ = 2;
 	uint32_t current_frame_in_flight_{0};
@@ -993,12 +994,10 @@ void VulkanRenderer::RecordCommandbuffer(vk::CommandBuffer& commandbuffer,
 	commandbuffer.draw(vertexCount, instanceCount, firstVertex, firstInstance);
 	commandbuffer.endRenderPass();
 	
-	const bool debug_print{false};
-
 	auto printImageBarrierTransition = [&] (const std::string name, 
 											const vk::ImageMemoryBarrier& barrier)
 	{
-		if (!debug_print)
+		if (!per_frame_debug_print)
 			return;
 		std::cout << "Transfered " << name << " from " 
 				  << vk::to_string(barrier.oldLayout) << " to "
@@ -1007,7 +1006,7 @@ void VulkanRenderer::RecordCommandbuffer(vk::CommandBuffer& commandbuffer,
 				  << std::endl;
 	};
 
-	if (debug_print) {
+	if (per_frame_debug_print) {
 		std::cout << "=======================================" << std::endl;
 		std::cout << "=======================================" << std::endl;
 	}
@@ -1078,7 +1077,7 @@ void VulkanRenderer::RecordCommandbuffer(vk::CommandBuffer& commandbuffer,
 								vk::ImageLayout::eTransferDstOptimal,
 								image_blit,
 								vk::Filter::eLinear);
-		if (debug_print) {
+		if (per_frame_debug_print) {
 			std::cout << "Blitted draw texture to rendertexture" << std::endl;
 			std::cout << "=======================================" << std::endl;
 		}
@@ -1148,7 +1147,7 @@ void VulkanRenderer::RecordCommandbuffer(vk::CommandBuffer& commandbuffer,
 								vk::ImageLayout::eTransferDstOptimal,
 								image_blit,
 								vk::Filter::eLinear);
-		if (debug_print) {
+		if (per_frame_debug_print) {
 			std::cout << "Blitted rendertexture to swapchain image" << std::endl;
 			std::cout << "=======================================" << std::endl;
 		}
@@ -1187,13 +1186,12 @@ void VulkanRenderer::RecordCommandbuffer(vk::CommandBuffer& commandbuffer,
 void
 VulkanRenderer::RecordBlitTextureToSwapchain(vk::CommandBuffer& commandbuffer,
 											 vk::Image& swapchain_image,
-											 Texture2D* texture,
-											 const bool debug_print)
+											 Texture2D* texture)
 {
 	auto printImageBarrierTransition = [&] (const std::string name, 
 											const vk::ImageMemoryBarrier& barrier)
 	{
-		if (!debug_print)
+		if (!per_frame_debug_print)
 			return;
 		std::cout << "Transfered " << name << " from " 
 				  << vk::to_string(barrier.oldLayout) << " to "
@@ -1202,7 +1200,7 @@ VulkanRenderer::RecordBlitTextureToSwapchain(vk::CommandBuffer& commandbuffer,
 				  << std::endl;
 	};
 
-	if (debug_print) {
+	if (per_frame_debug_print) {
 		std::cout << "=======================================" << std::endl;
 		std::cout << "=======================================" << std::endl;
 	}
@@ -1274,7 +1272,7 @@ VulkanRenderer::RecordBlitTextureToSwapchain(vk::CommandBuffer& commandbuffer,
 								vk::ImageLayout::eTransferDstOptimal,
 								image_blit,
 								vk::Filter::eLinear);
-		if (debug_print) {
+		if (per_frame_debug_print) {
 			std::cout << "Blitted rendertexture to swapchain image" << std::endl;
 			std::cout << "=======================================" << std::endl;
 		}
@@ -1330,14 +1328,15 @@ void VulkanRenderer::with_presentation(FrameGenerator& currentFrameGenerator)
 
 	assert(result == vk::Result::eSuccess);
 	assert(swapchain_index < swapchain_imageviews_.size());
-#if 1
-	const std::string line = ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>";
-	std::cout << line 
-			  << "\n> present flight index:    " << current_frame_in_flight_
-			  << "\n> present swapchain index: " << swapchain_index 
-			  << "\n> present total frames:    " << total_frames_ 
-			  << std::endl;
-#endif	
+
+	if (per_frame_debug_print) {
+		const std::string line = ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>";
+		std::cout << line 
+				  << "\n> present flight index:    " << current_frame_in_flight_
+				  << "\n> present swapchain index: " << swapchain_index 
+				  << "\n> present total frames:    " << total_frames_ 
+				  << std::endl;
+	}
 	
 	CurrentFrameInfo currentFrameInfo;
 	currentFrameInfo.current_flight_frame_index = current_frame_in_flight_;
@@ -1351,8 +1350,7 @@ void VulkanRenderer::with_presentation(FrameGenerator& currentFrameGenerator)
 	
 	RecordBlitTextureToSwapchain(commandbuffers_[current_frame_in_flight_].get(),
 								 swapchain_images_[swapchain_index],
-								 frameToPresent.value(),
-								 false);
+								 frameToPresent.value());
 
 	const std::vector<vk::Semaphore> waitSemaphores{
 		*(imageAvailableSemaphores_[current_frame_in_flight_]),

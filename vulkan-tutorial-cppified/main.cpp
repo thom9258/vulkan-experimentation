@@ -9,6 +9,19 @@
 #include "VulkanRenderer.hpp"
 #include "SimpleRenderBlitPass.hpp"
 
+
+template <typename F, typename... Args>
+std::chrono::duration<double>
+measure_time(F&& f, Args&&... args)
+{
+	using Clock = std::chrono::high_resolution_clock;
+	auto start = Clock::now();
+	std::invoke(std::forward<F>(f), std::forward<Args>(args)...);
+	auto end = Clock::now();
+	return end - start;
+}
+
+
 int main()
 {
 	VulkanRenderer renderer(2);
@@ -90,60 +103,67 @@ int main()
 	bool exit = false;
 
 	while (!exit) {
-		/** ************************************************************************
-		 * Handle Inputs
-		 */
-		while (SDL_PollEvent(&event)) {
-			switch (event.type) {
-			case SDL_QUIT:
-				exit = true;
-				break;
-				
-			case SDL_KEYDOWN:
-				switch( event.key.keysym.sym ) {
-				case SDLK_ESCAPE:
+		auto frame_time = measure_time([&] () {
+			/** ************************************************************************
+			 * Handle Inputs
+			 */
+			while (SDL_PollEvent(&event)) {
+				switch (event.type) {
+				case SDL_QUIT:
 					exit = true;
 					break;
-				}
-				
-				break;
-				
-			case SDL_WINDOWEVENT: {
-				const SDL_WindowEvent& wev = event.window;
-				switch (wev.event) {
-				case SDL_WINDOWEVENT_RESIZED:
-				case SDL_WINDOWEVENT_SIZE_CHANGED:
-					renderer.window_resize_event_triggered();
-					//TODO: DO RESIZE
+					
+				case SDL_KEYDOWN:
+					switch( event.key.keysym.sym ) {
+					case SDLK_ESCAPE:
+						exit = true;
+						break;
+					}
+					
 					break;
-				case SDL_WINDOWEVENT_CLOSE:
-					exit = true;
-					break;
+					
+				case SDL_WINDOWEVENT: {
+					const SDL_WindowEvent& wev = event.window;
+					switch (wev.event) {
+					case SDL_WINDOWEVENT_RESIZED:
+					case SDL_WINDOWEVENT_SIZE_CHANGED:
+						renderer.window_resize_event_triggered();
+						//TODO: DO RESIZE
+						break;
+					case SDL_WINDOWEVENT_CLOSE:
+						exit = true;
+						break;
+					}
+				} break;
 				}
-			} break;
 			}
-		}
-		
-		/** ************************************************************************
-		 * Render Loop
-		 */
-		FrameGenerator frameGenerator = [&] (CurrentFrameInfo frameInfo)
-			-> std::optional<Texture2D*>
-		{
-			auto textureptr = generate_next_frame(render_blit_pass,
-												  frameInfo.current_flight_frame_index,
-												  frameInfo.total_frame_count,
-												  renderer.device(),
-												  renderer.command_pool(),
-												  renderer.graphics_queue());
+			
+			/** ************************************************************************
+			 * Render Loop
+			 */
+			FrameGenerator frameGenerator = [&] (CurrentFrameInfo frameInfo)
+				-> std::optional<Texture2D*>
+				{
+					auto textureptr = generate_next_frame(render_blit_pass,
+														  frameInfo.current_flight_frame_index,
+														  frameInfo.total_frame_count,
+														  renderer.device(),
+														  renderer.command_pool(),
+														  renderer.graphics_queue());
+					
+					if (textureptr == nullptr)
+						return std::nullopt;
+					return textureptr;
+				};
+			
+			renderer.with_presentation(frameGenerator);
+		});
 
-			if (textureptr == nullptr)
-				return std::nullopt;
-			return textureptr;
-		};
-
-		renderer.with_presentation(frameGenerator);
 		//std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+
+		const auto frame_time_ms =
+			std::chrono::duration_cast<std::chrono::milliseconds>(frame_time);
+		std::cout << "Frame Time [ms]: " << frame_time_ms.count() << std::endl;
 	}
 	
 	return 0;
