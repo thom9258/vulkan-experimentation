@@ -16,12 +16,6 @@
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_vulkan.h>
 
-#define GLM_FORCE_DEPTH_ZERO_TO_ONE
-#define GLM_FORCE_RADIANS
-#include <glm/glm.hpp>
-#include <glm/ext.hpp>
-#include <glm/gtc/matrix_transform.hpp>
-
 #include "Utils.hpp"
 #include "DebugMessenger.hpp"
 
@@ -76,9 +70,13 @@ public:
 	vk::UniqueSwapchainKHR swapchain_;
 	vk::UniqueCommandPool commandpool_;
 
+	/*Per swapchain image*/
 	std::vector<vk::Image> swapchain_images_;
 	std::vector<vk::UniqueImageView> swapchain_imageviews_;
 	std::vector<Texture2D> rendertargets_;
+
+
+	/*Per Frame-in-Flight*/
 	std::vector<vk::UniqueCommandBuffer> commandbuffers_;
 	std::vector<vk::UniqueSemaphore> imageAvailableSemaphores_;
 	std::vector<vk::UniqueSemaphore> renderFinishedSemaphores_;
@@ -621,13 +619,15 @@ PresentationContext::RecordBlitTextureToSwapchain(vk::CommandBuffer& commandbuff
 			.setSrcOffsets(src_offsets)
 			.setSrcSubresource(src_subresource)
 			.setDstOffsets(dst_offsets)
-			.setDstSubresource(dst_subresource);
+			.setDstSubresource(dst_subresource)
+			;
 		
 		commandbuffer.blitImage(get_image(*texture),
 								vk::ImageLayout::eTransferSrcOptimal,
 								swapchain_image,
 								vk::ImageLayout::eTransferDstOptimal,
 								image_blit,
+								// Linear Interpolation is used
 								vk::Filter::eLinear);
 		if (per_frame_debug_print) {
 			std::cout << "Blitted rendertexture to swapchain image" << std::endl;

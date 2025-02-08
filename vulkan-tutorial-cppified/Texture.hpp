@@ -3,6 +3,7 @@
 #include <vulkan/vulkan.hpp>
 
 #include "Bitmap.hpp"
+#include "Canvas.hpp"
 
 #include <iostream>
 	
@@ -108,21 +109,73 @@ create_empty_rendertarget_texture(vk::PhysicalDevice& physical_device,
 								| vk::ImageUsageFlagBits::eColorAttachment);
 }
 
+constexpr vk::Format
+BitmapPixelFormatToVulkanFormat(const BitmapPixelFormat format) noexcept
+{
+	switch (format) {	
+	case BitmapPixelFormat::RGBA:
+		return vk::Format::eR8G8B8A8Srgb;
+	default:
+		break;
+	};
+	return vk::Format::eR8G8B8A8Srgb;
+}
+
 Texture2D
-copy_bitmap_to_gpu(vk::PhysicalDevice& physical_device,
-				   vk::Device& device,
-				   vk::CommandPool& command_pool,
-				   vk::Queue& queue,
-				   const vk::MemoryPropertyFlags propertyFlags,
-				   const Bitmap2D& bitmap)
+copy_to_gpu(vk::PhysicalDevice& physical_device,
+			vk::Device& device,
+			vk::CommandPool& command_pool,
+			vk::Queue& queue,
+			const vk::MemoryPropertyFlags propertyFlags,
+			const LoadedBitmap2D& bitmap)
 {
 	AllocatedMemory staging = create_staging_buffer(physical_device,
 													device,
-													bitmap.pixels,
+													get_pixels(bitmap),
 													bitmap.memory_size());
 	const auto extent = vk::Extent3D{}
 		.setWidth(bitmap.width)
 		.setHeight(bitmap.height)
+		.setDepth(1);
+	const auto format = BitmapPixelFormatToVulkanFormat(bitmap.format);
+	Texture2D texture = create_empty_general_texture(physical_device,
+													 device,
+													 format,
+													 extent,
+													 vk::ImageTiling::eOptimal,
+													 propertyFlags);
+
+	with_buffer_submit(device, command_pool, queue,
+					   [&] (vk::CommandBuffer& commandbuffer)
+					   {
+						   texture.layout =
+							   transition_image_color_override(get_image(texture),
+															   commandbuffer);
+
+						   copy_buffer_to_image(staging.buffer.get(),
+												get_image(texture),
+												texture.extent.width,
+												texture.extent.height,
+												commandbuffer);
+					   });
+	return texture;
+}
+
+Texture2D
+copy_to_gpu(vk::PhysicalDevice& physical_device,
+			vk::Device& device,
+			vk::CommandPool& command_pool,
+			vk::Queue& queue,
+			const vk::MemoryPropertyFlags propertyFlags,
+			const Canvas8bitRGBA& canvas)
+{
+	AllocatedMemory staging = create_staging_buffer(physical_device,
+													device,
+													get_pixels(canvas),
+													canvas.memory_size());
+	const auto extent = vk::Extent3D{}
+		.setWidth(canvas.width)
+		.setHeight(canvas.height)
 		.setDepth(1);
 
 	Texture2D texture = create_empty_general_texture(physical_device,

@@ -103,8 +103,8 @@ generate_next_frame(SimpleRenderBlitPass& pass,
 			};
 			const std::array<vk::Offset3D, 2> dst_offsets{ 
 				vk::Offset3D(0, 0, 0),
-				vk::Offset3D(render_extent.width / 2,
-							 render_extent.height / 2,
+				vk::Offset3D(400,
+							 400,
 							 1)
 			};
 			
@@ -119,7 +119,8 @@ generate_next_frame(SimpleRenderBlitPass& pass,
 									get_image(frame_pass.rendertarget),
 									vk::ImageLayout::eTransferDstOptimal,
 									image_blit,
-									vk::Filter::eLinear);
+									// blit over using nearest
+									vk::Filter::eNearest);
 			if (pass.debug_print) {
 				std::cout << "Pass: Blitted draw_texture to rendertarget" << std::endl;
 				std::cout << "=======================================" << std::endl;
