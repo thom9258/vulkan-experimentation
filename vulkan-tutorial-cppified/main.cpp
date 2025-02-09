@@ -8,6 +8,7 @@
 
 #include "VulkanRenderer.hpp"
 #include "SimpleRenderBlitPass.hpp"
+//#include "GeometryPass.hpp"
 
 #include "Bitmap.hpp"
 #include "Canvas.hpp"
@@ -32,7 +33,6 @@ int main()
 	PresentationContext presentor(2);
 	Texture2D blit_texture;
 		
-#if 1
 	auto loaded_lulu = load_bitmap("../lulu.jpg", BitmapPixelFormat::RGBA);
 	if (!std::holds_alternative<LoadedBitmap2D>(loaded_lulu))
 		throw std::runtime_error("Could not load bitmap image..");
@@ -81,59 +81,6 @@ int main()
 														 barrier);
 					   });
 	blit_texture.layout = vk::ImageLayout::eTransferSrcOptimal;
-
-#else
-	auto bitmap = load_bitmap("../lulu.jpg", BitmapPixelFormat::RGBA);
-	if (std::holds_alternative<LoadedBitmap2D>(bitmap)) {
-		blit_texture = copy_to_gpu(presentor.physical_device,
-								   presentor.device.get(),
-								   presentor.command_pool(),
-								   presentor.graphics_queue(),
-								   vk::MemoryPropertyFlagBits::eDeviceLocal,
-								   std::get<LoadedBitmap2D>(bitmap));
-	
-		/*transfer the draw texture to a transferSrc layout for blitting*/
-		with_buffer_submit(presentor.device.get(),
-						   presentor.command_pool(),
-						   presentor.graphics_queue(),
-						   [&] (vk::CommandBuffer& commandbuffer)
-						   {
-							   auto range = vk::ImageSubresourceRange{}
-								   .setAspectMask(vk::ImageAspectFlagBits::eColor)
-								   .setBaseMipLevel(0)
-								   .setLevelCount(1)
-								   .setBaseArrayLayer(0)
-								   .setLayerCount(1);
-		
-							   auto barrier = vk::ImageMemoryBarrier{}
-								   .setOldLayout(vk::ImageLayout::eTransferDstOptimal)
-								   .setNewLayout(vk::ImageLayout::eTransferSrcOptimal)
-								   .setImage(get_image(blit_texture))
-								   .setSubresourceRange(range)
-								   .setSrcAccessMask(vk::AccessFlagBits::eTransferWrite)
-								   .setDstAccessMask(vk::AccessFlagBits::eTransferWrite)
-								   .setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
-								   .setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED);
-		
-							   commandbuffer.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
-															 vk::PipelineStageFlagBits::eTransfer,
-															 vk::DependencyFlags(),
-															 nullptr,
-															 nullptr,
-															 barrier);
-						   });
-		blit_texture.layout = vk::ImageLayout::eTransferSrcOptimal;
-
-	}
-	else if (std::holds_alternative<InvalidPath>(bitmap)) {
-		std::cout << "Invalid path: " << std::get<InvalidPath>(bitmap).path << std::endl;
-		throw std::runtime_error("Image failure");
-	}
-	else if (std::holds_alternative<LoadError>(bitmap)) {
-		std::cout << "Load Error: " << std::get<LoadError>(bitmap).why << std::endl;
-		throw std::runtime_error("Image failure");
-	}
-#endif
 
 	std::cout << "===========================================================\n"
 			  << " Creating Simple RenderBlit Pass\n"
