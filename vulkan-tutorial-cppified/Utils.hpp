@@ -417,13 +417,20 @@ struct AllocatedImage
 	vk::UniqueDeviceMemory memory;
 };
 
+vk::Image&
+get_image(AllocatedImage& allocatedImage)
+{
+	return allocatedImage.image.get();
+}
+
 AllocatedImage
 allocate_image(vk::PhysicalDevice physical_device,
 			   vk::Device device,
 			   const vk::Extent3D extent,
 			   const vk::Format format,
 			   const vk::ImageTiling tiling,
-			   const vk::MemoryPropertyFlags propertyFlags) noexcept
+			   const vk::MemoryPropertyFlags propertyFlags,
+			   const vk::ImageUsageFlags usage) noexcept
 {
 	const auto imageCreateInfo = vk::ImageCreateInfo{}
 		.setImageType(vk::ImageType::e2D)
@@ -432,9 +439,7 @@ allocate_image(vk::PhysicalDevice physical_device,
 		.setMipLevels(1)
 		.setArrayLayers(1)
 		.setTiling(tiling)
-		.setUsage(vk::ImageUsageFlagBits::eTransferDst
-				  | vk::ImageUsageFlagBits::eTransferSrc
-				  | vk::ImageUsageFlagBits::eSampled) 
+		.setUsage(usage) 
 		.setInitialLayout(vk::ImageLayout::eUndefined)
 		.setSharingMode(vk::SharingMode::eExclusive)
 		.setSamples(vk::SampleCountFlagBits::e1);

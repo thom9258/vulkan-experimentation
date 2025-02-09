@@ -22,50 +22,56 @@ BitmapPixelFormatToSTBIFormat(const BitmapPixelFormat format) noexcept
 	return STBI_rgb_alpha;
 }
 
-struct Bitmap2D
+struct LoadedBitmap2D
 {
-	Bitmap2D() = default;
-	~Bitmap2D();
-
-	Bitmap2D(const Bitmap2D&) = delete;
-	Bitmap2D& operator=(const Bitmap2D&) = delete;
-
-	//todo the move operators should swap data, to ensure existing data is freed aswell
-	Bitmap2D(Bitmap2D&& rhs) {
-		std::swap(width, rhs.width);
-		std::swap(height, rhs.height);
-		std::swap(channels, rhs.channels);
-		std::swap(pixels, rhs.pixels);
-	}
-
-	Bitmap2D& operator=(Bitmap2D&& rhs) {
-		std::swap(width, rhs.width);
-		std::swap(height, rhs.height);
-		std::swap(channels, rhs.channels);
-		std::swap(pixels, rhs.pixels);
-		return *this;
-	}
+	LoadedBitmap2D() = default;
+	~LoadedBitmap2D();
+	LoadedBitmap2D(const LoadedBitmap2D&) = delete;
+	LoadedBitmap2D& operator=(const LoadedBitmap2D&) = delete;
+	LoadedBitmap2D(LoadedBitmap2D&& rhs);
+	LoadedBitmap2D& operator=(LoadedBitmap2D&& rhs);
 
 	size_t memory_size() const noexcept;
 	
-	BitmapPixelFormat pixel_format;
+	BitmapPixelFormat format;
 	int width{0};
 	int height{0};
 	int channels{0};
 	stbi_uc* pixels{nullptr};
 };
 
-size_t
-Bitmap2D::memory_size() const noexcept
+LoadedBitmap2D::LoadedBitmap2D(LoadedBitmap2D&& rhs) {
+	std::swap(format, rhs.format);
+	std::swap(width, rhs.width);
+	std::swap(height, rhs.height);
+	std::swap(channels, rhs.channels);
+	std::swap(pixels, rhs.pixels);
+}
+
+LoadedBitmap2D& LoadedBitmap2D::operator=(LoadedBitmap2D&& rhs) {
+	std::swap(format, rhs.format);
+	std::swap(width, rhs.width);
+	std::swap(height, rhs.height);
+	std::swap(channels, rhs.channels);
+	std::swap(pixels, rhs.pixels);
+	return *this;
+}
+
+template <typename F>
+decltype(auto) operator|(LoadedBitmap2D&& bitmap, F&& f)
 {
-	// TODO: 4 should be channels i guess?
+	return std::invoke(std::forward<F>(f), std::move(bitmap));
+}
+
+size_t
+LoadedBitmap2D::memory_size() const noexcept
+{
     return width * height * 4;
 }
 
-Bitmap2D::~Bitmap2D()
+LoadedBitmap2D::~LoadedBitmap2D()
 {
-	if (pixels)
-		stbi_image_free(pixels);
+	stbi_image_free(pixels);
 }
 
 struct InvalidPath
@@ -78,20 +84,21 @@ struct LoadError
 	const char* why{nullptr};
 };
 
-using LoadedBitmap = std::variant<Bitmap2D,
-								  InvalidPath,
-								  LoadError>;
+struct InvalidNativePixels
+{
+};
 
-LoadedBitmap 
+std::variant<LoadedBitmap2D,
+			 InvalidPath,
+			 InvalidNativePixels,
+			 LoadError>
 load_bitmap(const std::filesystem::path& path, const BitmapPixelFormat format) noexcept
 {
-	//std::cout << "Image path: " << path.string() << std::endl;
 	if (!std::filesystem::exists(path))
 		return InvalidPath{path};
 	
-	Bitmap2D bitmap;
-	bitmap.pixel_format = format;
-    //bitmap.pixels = stbi_load("../texture.jpg",
+	LoadedBitmap2D bitmap;
+	bitmap.format = format;
     bitmap.pixels = stbi_load(path.string().c_str(),
 							  &bitmap.width,
 							  &bitmap.height,
@@ -102,4 +109,10 @@ load_bitmap(const std::filesystem::path& path, const BitmapPixelFormat format) n
 		return LoadError{stbi_failure_reason()};
 
 	return bitmap;
+}
+
+uint8_t*
+get_pixels(const LoadedBitmap2D& bitmap)
+{
+	return bitmap.pixels;
 }
