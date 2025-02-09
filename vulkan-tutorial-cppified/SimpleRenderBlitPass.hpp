@@ -103,8 +103,8 @@ generate_next_frame(SimpleRenderBlitPass& pass,
 			};
 			const std::array<vk::Offset3D, 2> dst_offsets{ 
 				vk::Offset3D(0, 0, 0),
-				vk::Offset3D(400,
-							 400,
+				vk::Offset3D(pass.draw_texture.extent.width / 3,
+							 pass.draw_texture.extent.height / 3,
 							 1)
 			};
 			

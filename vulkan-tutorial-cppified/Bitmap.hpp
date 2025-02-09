@@ -41,6 +41,7 @@ struct LoadedBitmap2D
 };
 
 LoadedBitmap2D::LoadedBitmap2D(LoadedBitmap2D&& rhs) {
+	std::swap(format, rhs.format);
 	std::swap(width, rhs.width);
 	std::swap(height, rhs.height);
 	std::swap(channels, rhs.channels);
@@ -48,11 +49,18 @@ LoadedBitmap2D::LoadedBitmap2D(LoadedBitmap2D&& rhs) {
 }
 
 LoadedBitmap2D& LoadedBitmap2D::operator=(LoadedBitmap2D&& rhs) {
+	std::swap(format, rhs.format);
 	std::swap(width, rhs.width);
 	std::swap(height, rhs.height);
 	std::swap(channels, rhs.channels);
 	std::swap(pixels, rhs.pixels);
 	return *this;
+}
+
+template <typename F>
+decltype(auto) operator|(LoadedBitmap2D&& bitmap, F&& f)
+{
+	return std::invoke(std::forward<F>(f), std::move(bitmap));
 }
 
 size_t

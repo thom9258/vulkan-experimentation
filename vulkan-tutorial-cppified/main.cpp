@@ -8,6 +8,8 @@
 
 #include "VulkanRenderer.hpp"
 #include "SimpleRenderBlitPass.hpp"
+
+#include "Bitmap.hpp"
 #include "Canvas.hpp"
 
 
@@ -24,25 +26,29 @@ with_time_measurement(F&& f, Args&&... args)
 
 int main()
 {
+	const auto purple = Pixel8bitRGBA{170, 0, 170, 255};
+	const auto yellow = Pixel8bitRGBA{170, 170, 0, 255};
+
 	PresentationContext presentor(2);
 	Texture2D blit_texture;
 		
 #if 1
+	auto loaded_lulu = load_bitmap("../lulu.jpg", BitmapPixelFormat::RGBA);
+	if (!std::holds_alternative<LoadedBitmap2D>(loaded_lulu))
+		throw std::runtime_error("Could not load bitmap image..");
 	
-	const auto purple = Pixel8bitRGBA{170, 0, 170, 255};
-	const auto yellow = Pixel8bitRGBA{170, 170, 0, 255};
-	const auto green = Pixel8bitRGBA{0, 170, 0, 255};
-	const auto checkerboard = create_canvas(purple, 100, 100) 
-		                    | draw_checkerboard(yellow, 10)
-		                    | draw_rectangle(green, 50, 50, 20, 20);
+	auto lulu_checkerboard 
+		= std::move(std::get<LoadedBitmap2D>(loaded_lulu))
+		| as_canvas
+		| draw_checkerboard(yellow, 100)
+		| draw_coordinate_system(CanvasExtent{20, 400});
 	
-
 	blit_texture = copy_to_gpu(presentor.physical_device,
 							   presentor.device.get(),
 							   presentor.command_pool(),
 							   presentor.graphics_queue(),
 							   vk::MemoryPropertyFlagBits::eDeviceLocal,
-							   checkerboard);
+							   lulu_checkerboard);
 
 	/*transfer the draw texture to a transferSrc layout for blitting*/
 	with_buffer_submit(presentor.device.get(),
@@ -63,7 +69,7 @@ int main()
 							   .setImage(get_image(blit_texture))
 							   .setSubresourceRange(range)
 							   .setSrcAccessMask(vk::AccessFlagBits::eTransferWrite)
-							   .setDstAccessMask(vk::AccessFlagBits::eTransferWrite)
+							   .setDstAccessMask(vk::AccessFlagBits::eTransferRead)
 							   .setSrcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
 							   .setDstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED);
 	

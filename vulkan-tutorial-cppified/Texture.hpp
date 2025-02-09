@@ -174,8 +174,8 @@ copy_to_gpu(vk::PhysicalDevice& physical_device,
 													get_pixels(canvas),
 													canvas.memory_size());
 	const auto extent = vk::Extent3D{}
-		.setWidth(canvas.width)
-		.setHeight(canvas.height)
+		.setWidth(canvas.extent.width)
+		.setHeight(canvas.extent.height)
 		.setDepth(1);
 
 	Texture2D texture = create_empty_general_texture(physical_device,

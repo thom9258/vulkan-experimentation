@@ -1,11 +1,25 @@
 #pragma once
 
+#include "Bitmap.hpp"
+
 struct Pixel8bitRGBA
 {
 	uint8_t r;
 	uint8_t g;
 	uint8_t b;
 	uint8_t a;
+};
+
+struct CanvasOffset
+{
+	uint32_t x;
+	uint32_t y;
+};
+
+struct CanvasExtent
+{
+	uint32_t width;
+	uint32_t height;
 };
 
 struct Canvas8bitRGBA
@@ -20,22 +34,24 @@ struct Canvas8bitRGBA
 	size_t memory_size() const noexcept;
 
 	std::optional<std::reference_wrapper<Pixel8bitRGBA>>
+	at(const CanvasOffset offset) noexcept;
+
+	std::optional<std::reference_wrapper<Pixel8bitRGBA>>
 	at(const uint32_t x, const uint32_t y) noexcept;
 
-	uint32_t width{0};
-	uint32_t height{0};
-	std::vector<Pixel8bitRGBA> pixels;
+	CanvasExtent extent{0, 0};
+	std::vector<Pixel8bitRGBA> pixels{};
 };
 
-Canvas8bitRGBA::Canvas8bitRGBA(Canvas8bitRGBA&& rhs) {
-	std::swap(width, rhs.width);
-	std::swap(height, rhs.height);
+Canvas8bitRGBA::Canvas8bitRGBA(Canvas8bitRGBA&& rhs) 
+{
+	std::swap(extent, rhs.extent);
 	std::swap(pixels, rhs.pixels);
 }
 
-Canvas8bitRGBA& Canvas8bitRGBA::operator=(Canvas8bitRGBA&& rhs) {
-	std::swap(width, rhs.width);
-	std::swap(height, rhs.height);
+Canvas8bitRGBA& Canvas8bitRGBA::operator=(Canvas8bitRGBA&& rhs) 
+{
+	std::swap(extent, rhs.extent);
 	std::swap(pixels, rhs.pixels);
 	return *this;
 }
@@ -43,18 +59,25 @@ Canvas8bitRGBA& Canvas8bitRGBA::operator=(Canvas8bitRGBA&& rhs) {
 size_t
 Canvas8bitRGBA::memory_size() const noexcept
 {
-    return width * height * sizeof(decltype(pixels)::value_type);
+    return extent.width * extent.height * sizeof(decltype(pixels)::value_type);
+}
+
+std::optional<std::reference_wrapper<Pixel8bitRGBA>>
+Canvas8bitRGBA::at(const CanvasOffset offset) noexcept
+{
+	if (offset.x < extent.width && offset.y < extent.height) {
+		const auto i = offset.y * extent.width + offset.x;
+		return pixels.at(i);
+	}
+
+	return std::nullopt;
 }
 
 std::optional<std::reference_wrapper<Pixel8bitRGBA>>
 Canvas8bitRGBA::at(const uint32_t x, const uint32_t y) noexcept
 {
-	if (x < width && y < height) {
-		return pixels[x*width + y];
-	}
-	return std::nullopt;
+	return at(CanvasOffset{x, y});
 }
-
 
 uint8_t*
 get_pixels(Canvas8bitRGBA& canvas)
@@ -71,116 +94,135 @@ get_pixels(const Canvas8bitRGBA& canvas)
 [[nodiscard]]
 Canvas8bitRGBA
 create_canvas(const Pixel8bitRGBA color,
-			  const uint32_t width,
-			  const uint32_t height)
+			  const CanvasExtent extent)
 {
 	Canvas8bitRGBA canvas{};
-	canvas.width = width;
-	canvas.height = height;
-	canvas.pixels.resize(width * height, color);
+	canvas.extent = extent;
+	canvas.pixels.resize(extent.width * extent.height, color);
 	return canvas;
 }
 
-[[nodiscard]]
-Canvas8bitRGBA
-draw_rectangle(const Pixel8bitRGBA& color,
-			   const uint32_t x,
-			   const uint32_t y,
-			   const uint32_t w,
-			   const uint32_t h,
-			   Canvas8bitRGBA&& canvas)
-{
-	for (uint32_t dw = 0; dw < w; dw++) {
-		for (uint32_t dh = 0; dh < h; dh++) {
-			if (dw + x < canvas.width && dh + y < canvas.height) {
-				canvas.at(dw + x, dh + y).value().get() = color;
-			}
-		}
-	}
-
-	return canvas;
-}
-
-[[nodiscard]]
-Canvas8bitRGBA
-draw_checkerboard(const Pixel8bitRGBA& color,
-				  const uint32_t size,
-				  Canvas8bitRGBA&& canvas)
-{
-	bool apply_height_offset = false;
-	for (uint32_t h = 0; h < canvas.height; h += size) {
-		for (uint32_t w = 0; w < canvas.width; w += size*2) {
-			if (apply_height_offset)
-				canvas = draw_rectangle(color, w + size, h, size, size, std::move(canvas));
-			else
-				canvas = draw_rectangle(color, w, h, size, size, std::move(canvas));
-		}
-		apply_height_offset = !apply_height_offset;
-	}
-	return canvas;
-}
-
-
-
-
-
-template <typename F> requires
-requires (F&& f, Canvas8bitRGBA&& canvas) 
-{
-	{ std::invoke(std::forward<F>(f), std::move(canvas)) } -> std::same_as<Canvas8bitRGBA>;
-}
-Canvas8bitRGBA operator|(Canvas8bitRGBA&& canvas, F&& f)
+template <typename F>
+decltype(auto) operator|(Canvas8bitRGBA&& canvas, F&& f)
 {
 	return std::invoke(std::forward<F>(f), std::move(canvas));
 }
 
-struct draw_checkerboard_p
+[[nodiscard]]
+Canvas8bitRGBA as_canvas(LoadedBitmap2D&& bitmap)
+{
+	if (bitmap.format != BitmapPixelFormat::RGBA)
+		throw std::runtime_error("Only RGBA format can be currently converted to canvas...");
+	
+	Canvas8bitRGBA canvas;
+	canvas.extent = CanvasExtent{static_cast<uint32_t>(bitmap.width),
+		                         static_cast<uint32_t>(bitmap.height)};
+	canvas.pixels.resize(bitmap.width * bitmap.height);
+	for (size_t i = 0; i < canvas.pixels.size(); i++) {
+		canvas.pixels[i] = Pixel8bitRGBA{bitmap.pixels[i*4+0],
+			                             bitmap.pixels[i*4+1],
+										 bitmap.pixels[i*4+2],
+										 bitmap.pixels[i*4+3]};
+	}
+
+	return canvas;
+}
+
+struct draw_rectangle
+{
+	const Pixel8bitRGBA color;
+	const CanvasOffset offset;
+	const CanvasExtent extent;
+
+	draw_rectangle(const Pixel8bitRGBA color,
+				   const CanvasOffset offset,
+				   const CanvasExtent extent)
+		: color(color), offset(offset), extent(extent)
+	{}
+	
+	Canvas8bitRGBA
+	operator()(Canvas8bitRGBA&& canvas)
+	{
+		for (uint32_t dw = 0; dw < extent.width; dw++) {
+			for (uint32_t dh = 0; dh < extent.height; dh++) {
+				auto accessor = canvas.at(offset.x + dw, offset.y + dh);
+				if (accessor.has_value()) 
+					accessor.value().get() = color;
+			}
+		}
+		
+		return canvas;
+	}
+};
+
+struct draw_checkerboard
 {
 	const Pixel8bitRGBA color;
 	const uint32_t size;
 
-	draw_checkerboard_p(const Pixel8bitRGBA color, const uint32_t size)
+	draw_checkerboard(const Pixel8bitRGBA color, const uint32_t size)
 		: color(color), size(size) 
 	{}
 	
 	Canvas8bitRGBA
 	operator()(Canvas8bitRGBA&& canvas)
 	{
-		return draw_checkerboard(color, size, std::move(canvas));
+		Canvas8bitRGBA board = std::move(canvas);
+		std::cout << "board\n"
+			<< "width " << board.extent.width << "\n"
+			<< "height " << board.extent.height << "\n";
+
+		bool apply_width_offset = false;
+		for (uint32_t h = 0; h < board.extent.height; h += size) {
+			for (uint32_t w = 0; w < board.extent.width; w += size*2) {
+				const auto offset = (apply_width_offset) ? CanvasOffset{w + size, h}
+					                                     : CanvasOffset{w, h};
+				const auto extent = CanvasExtent{size, size};
+				board = std::move(board) | draw_rectangle(color, offset, extent);
+			}
+			apply_width_offset = !apply_width_offset;
+		}
+		return board;
 	}
 };
 
-draw_checkerboard_p
-draw_checkerboard(const Pixel8bitRGBA& color, const uint32_t size)
+struct draw_coordinate_system
 {
-	return draw_checkerboard_p(color, size);
-}
+	const CanvasExtent arrow;
 
-
-struct draw_rectangle_p
-{
-	const Pixel8bitRGBA color;
-	const uint32_t x;
-	const uint32_t y;
-	const uint32_t w;
-	const uint32_t h;
-
-	draw_rectangle_p(const Pixel8bitRGBA color,
-					 const uint32_t x, const uint32_t y,
-					 const uint32_t w, const uint32_t h)
-		: color(color), x(x), y(y), w(w), h(h)
+	draw_coordinate_system(const CanvasExtent arrow)
+		: arrow(arrow)
 	{}
 	
 	Canvas8bitRGBA
 	operator()(Canvas8bitRGBA&& canvas)
 	{
-		return draw_rectangle(color, x, y, w, h, std::move(canvas));
+		const auto green = Pixel8bitRGBA{0, 170, 0, 255};
+		const auto red = Pixel8bitRGBA{170, 0, 0, 255};
+		const auto blue = Pixel8bitRGBA{0, 0, 170, 255};
+		const auto canvas_extent = canvas.extent;
+
+		return std::move(canvas)
+			| draw_rectangle(green,
+							 CanvasOffset{arrow.width, 0},
+							 CanvasExtent{arrow.height, arrow.width})
+			| draw_rectangle(red,
+							 CanvasOffset{0, arrow.width},
+							 CanvasExtent{arrow.width, arrow.height})
+			| draw_rectangle(blue,
+							 CanvasOffset{0, 0},
+							 CanvasExtent{arrow.width, arrow.width})
+			| draw_rectangle(green,
+							 CanvasOffset{canvas_extent.width - arrow.width, 0},
+							 CanvasExtent{arrow.width, arrow.width})
+			| draw_rectangle(red,
+							 CanvasOffset{0, canvas_extent.height - arrow.width},
+							 CanvasExtent{arrow.width, arrow.width})
+			| draw_rectangle(blue,
+							 CanvasOffset{canvas_extent.width - arrow.width,
+								          canvas_extent.height - arrow.width},
+							 CanvasExtent{arrow.width, arrow.width});
 	}
 };
-draw_rectangle_p
-draw_rectangle(const Pixel8bitRGBA& color,
-					 const uint32_t x, const uint32_t y,
-					 const uint32_t w, const uint32_t h)
-{
-	return draw_rectangle_p(color, x, y, w, h);
-}
+
+
